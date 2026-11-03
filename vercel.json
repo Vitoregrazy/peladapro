@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/api/rooms/:code",
+      "destination": "/api/rooms?code=:code"
+    },
+    {
+      "source": "/api/rooms",
+      "destination": "/api/rooms"
+    },
+    {
+      "source": "/((?!api/|assets/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
