@@ -22,6 +22,7 @@ interface RoomState {
   participants: { clientId: string; name: string; role: 'host' | 'guest'; joinedAt: number }[];
   activityFeed: { id: string; text: string; timestamp: number }[];
   updatedAt: number;
+  isServerSeed?: boolean;
 }
 
 const DEFAULT_RULES = {
@@ -57,12 +58,12 @@ const INITIAL_PLAYERS: Player[] = [
 const memoryRooms = new Map<string, RoomState>();
 let schemaInitialized = false;
 
-function buildSeedRoom(code: string, name: string, hostName: string): RoomState {
+function buildSeedRoom(code: string, name: string, hostName: string, isServerSeed = true): RoomState {
   return {
     code: code.toUpperCase(),
     name,
     hostName,
-    players: INITIAL_PLAYERS.map((p) => ({ ...p })),
+    players: [],
     rules: { ...DEFAULT_RULES },
     drawnTeams: [],
     coinToss: {
@@ -89,22 +90,16 @@ function buildSeedRoom(code: string, name: string, hostName: string): RoomState 
       endedReason: null,
     },
     championship: null,
-    participants: [
-      {
-        clientId: 'seed-host',
-        name: hostName,
-        role: 'host',
-        joinedAt: Date.now(),
-      },
-    ],
+    participants: [],
     activityFeed: [
       {
-        id: 'act-init',
-        text: `Sala privada ${code.toUpperCase()} criada por ${hostName}`,
+        id: `act-${Date.now()}`,
+        text: `Sala privada ${code.toUpperCase()} criada`,
         timestamp: Date.now(),
       },
     ],
-    updatedAt: Date.now(),
+    updatedAt: 0,
+    isServerSeed,
   };
 }
 
@@ -351,6 +346,7 @@ export default async function handler(req: Request, res: Response) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
 
   if (req.method === 'OPTIONS') {
     res.status(200).end();
@@ -469,15 +465,43 @@ export default async function handler(req: Request, res: Response) {
             ...room.activityFeed.slice(0, 19),
           ];
         }
+      } else if (action === 'clear_all_players') {
+        room.players = [];
+        room.drawnTeams = [];
+        room.championship = null;
+        room.isServerSeed = false;
+        room.updatedAt = Date.now();
+        room.activityFeed = [
+          {
+            id: `act-${Date.now()}`,
+            text: `Lista e sorteio reiniciados para Nova Pelada`,
+            timestamp: Date.now(),
+          },
+          ...room.activityFeed.slice(0, 19),
+        ];
+      } else if (action === 'clear_drawn_teams') {
+        room.drawnTeams = [];
+        room.isServerSeed = false;
+        room.updatedAt = Date.now();
+        room.activityFeed = [
+          {
+            id: `act-${Date.now()}`,
+            text: `Sorteio anterior descartado`,
+            timestamp: Date.now(),
+          },
+          ...room.activityFeed.slice(0, 19),
+        ];
       } else if (payload) {
-        if (payload.players) room.players = payload.players;
+        if (Array.isArray(payload.players)) room.players = payload.players;
         if (payload.rules) room.rules = payload.rules;
-        if (payload.drawnTeams) room.drawnTeams = payload.drawnTeams;
+        if (Array.isArray(payload.drawnTeams)) room.drawnTeams = payload.drawnTeams;
         if (payload.coinToss) room.coinToss = payload.coinToss;
         if (payload.liveMatch) room.liveMatch = payload.liveMatch;
         if (payload.championship !== undefined) {
           room.championship = payload.championship;
         }
+        room.isServerSeed = false;
+        room.updatedAt = Number(req.body.updatedAt) || Date.now();
       }
 
       if (activityText) {

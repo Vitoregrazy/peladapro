@@ -1,18 +1,31 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import {
   Check,
+  CheckCircle2,
+  Circle,
   Clock,
   Crown,
+  DollarSign,
   Download,
   EyeOff,
   FileSpreadsheet,
+  KeyRound,
   Play,
   Plus,
+  Search,
+  Shield,
   Shuffle,
   SlidersHorizontal,
+  Sparkles,
+  Star,
   Trash2,
   Trophy,
+  UserPlus,
+  Users,
+  Volume2,
+  VolumeX,
   Wifi,
+  X,
 } from 'lucide-react';
 import {
   Championship,
@@ -38,8 +51,26 @@ import { WhatsAppModal } from './components/WhatsAppModal';
 import { MatchRefereeView } from './components/MatchRefereeView';
 import { ChampionshipView } from './components/ChampionshipView';
 import { LiveRoomView } from './components/LiveRoomView';
+import { SubTabNavigation } from './components/ui/SubTabNavigation';
+import { OtaUpdateOverlay } from './components/OtaUpdateOverlay';
+import { GuestCheckinModal } from './components/GuestCheckinModal';
+import { PixRateioModal } from './components/PixRateioModal';
+import { VipLicenseModal } from './components/VipLicenseModal';
+import { FifaCardModal } from './components/FifaCardModal';
+import { AppFooter } from './components/AppFooter';
+import { buildApiUrl, generateInviteLink } from './services/appUrl';
+import { getLicenseStatus, LicenseStatus } from './services/licenseService';
+import {
+  isSoundEnabled,
+  playCoinSound,
+  playWhistleMatchEnd,
+  playWhistleShort,
+  setSoundEnabled,
+} from './services/soundEffects';
+import { otaService } from './services/otaService';
 
 type ActiveTab = 'draw' | 'match' | 'tournament' | 'live';
+type DrawSubTab = 'players' | 'teams' | 'rules';
 
 const FORMATION_PRESETS = [
   { label: '3+1 (Mini Quadra)', line: 3, gk: 1 },
@@ -50,17 +81,76 @@ const FORMATION_PRESETS = [
   { label: '10+1 (Campo Oficial)', line: 10, gk: 1 },
 ];
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
-const LOCAL_STORAGE_KEY = 'peladapro_local_state_v1';
+const LOCAL_STORAGE_KEY = 'peladapro_local_state_v2';
 
-function buildApiUrl(endpoint: string): string {
-  return API_BASE_URL ? `${API_BASE_URL}${endpoint}` : endpoint;
+interface HydratedState {
+  players: Player[];
+  drawnTeams: DrawnTeam[];
+  rules: MatchRules;
+  updatedAt: number;
+}
+
+function loadInitialState(): HydratedState {
+  if (typeof window === 'undefined') {
+    return {
+      players: INITIAL_PLAYERS,
+      drawnTeams: [],
+      rules: DEFAULT_RULES,
+      updatedAt: 0,
+    };
+  }
+
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const loadedPlayers = Array.isArray(parsed.players) ? parsed.players : [];
+      // Se não há jogadores suficientes, nunca exibe times antigos!
+      const loadedTeams =
+        loadedPlayers.length >= 2 && Array.isArray(parsed.drawnTeams)
+          ? parsed.drawnTeams
+          : [];
+      return {
+        players: loadedPlayers,
+        drawnTeams: loadedTeams,
+        rules: parsed.rules || DEFAULT_RULES,
+        updatedAt: Number(parsed.updatedAt || Date.now()),
+      };
+    }
+  } catch (err) {
+    console.warn('[Storage] Falha ao ler estado salvo:', err);
+  }
+
+  return {
+    players: INITIAL_PLAYERS,
+    drawnTeams: [],
+    rules: DEFAULT_RULES,
+    updatedAt: Date.now(),
+  };
 }
 
 export default function App() {
+  const initialHydrated = useMemo(() => loadInitialState(), []);
   const [activeTab, setActiveTab] = useState<ActiveTab>('draw');
-  const [players, setPlayers] = useState<Player[]>(INITIAL_PLAYERS);
-  const [rules, setRules] = useState<MatchRules>(DEFAULT_RULES);
+  const [drawSubTab, setDrawSubTab] = useState<DrawSubTab>('players');
+  const [players, setPlayers] = useState<Player[]>(initialHydrated.players);
+  const [rules, setRules] = useState<MatchRules>(initialHydrated.rules);
+  const [drawnTeams, setDrawnTeams] = useState<DrawnTeam[]>(initialHydrated.drawnTeams);
+  const stateUpdatedAtRef = useRef<number>(initialHydrated.updatedAt);
+  const lastUserMutationAtRef = useRef<number>(0);
+  const syncAbortControllerRef = useRef<AbortController | null>(null);
+
+  // License & VIP State (Degustação de 14 dias + Chave VIP)
+  const [license, setLicense] = useState<LicenseStatus>(() => getLicenseStatus());
+  const [isVipModalOpen, setIsVipModalOpen] = useState(false);
+  const [logoTaps, setLogoTaps] = useState(0);
+
+  // Modais de Próximo Nível (Check-in, Rateio Pix, Cartinha FIFA)
+  const [isCheckinModalOpen, setIsCheckinModalOpen] = useState(false);
+  const [isPixModalOpen, setIsPixModalOpen] = useState(false);
+  const [isFifaCardOpen, setIsFifaCardOpen] = useState(false);
+  const [selectedFifaPlayer, setSelectedFifaPlayer] = useState<Player | null>(null);
+  const [soundActive, setSoundActive] = useState<boolean>(() => isSoundEnabled());
 
   // Discreet Rigging ("Modo Panela Invisível")
   const [rigging, setRigging] = useState<RiggingConfig>({
@@ -72,21 +162,14 @@ export default function App() {
   });
   const [showDiscreetPanel, setShowDiscreetPanel] = useState(false);
 
-  // Initial drawn teams
-  const [drawnTeams, setDrawnTeams] = useState<DrawnTeam[]>(() =>
-    drawTeams(
-      INITIAL_PLAYERS,
-      DEFAULT_RULES,
-      { enabled: false, mode: 'balanced', pinnedTeammateIds: [], excludedRivalIds: [] },
-      () => 0.42
-    )
-  );
-
-  // New Player Form State
+  // New Player Form State & Modal
+  const [isAddPlayerModalOpen, setIsAddPlayerModalOpen] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState('');
   const [newPlayerIsGk, setNewPlayerIsGk] = useState(false);
   const [newPlayerRating, setNewPlayerRating] = useState(4);
-  const [rosterFilter, setRosterFilter] = useState<'all' | 'line' | 'gk'>('all');
+  const [rosterFilter, setRosterFilter] = useState<'all' | 'present' | 'line' | 'gk'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTeamView, setSelectedTeamView] = useState<'all' | number>('all');
 
   // WhatsApp Modal & PDF Export Feedback
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
@@ -138,6 +221,19 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const isApplyingRemoteRef = useRef(false);
 
+  // Auto-detect Check-in link from WhatsApp (?room=...&mode=checkin)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const isCheckin =
+        params.get('mode') === 'checkin' ||
+        Boolean(params.get('room') && !params.get('admin'));
+      if (isCheckin) {
+        setIsCheckinModalOpen(true);
+      }
+    }
+  }, []);
+
   // Connect to WebSocket Room + Vercel Database HTTP Sync Fallback
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -146,50 +242,100 @@ export default function App() {
 
     const applyRemoteRoom = (r: RoomState) => {
       isApplyingRemoteRef.current = true;
+      stateUpdatedAtRef.current = Number(r.updatedAt || Date.now());
       setRoomState(r);
-      setPlayers(r.players);
-      setRules(r.rules);
-      setDrawnTeams(r.drawnTeams);
-      setCoinToss(r.coinToss);
-      setLiveMatch(r.liveMatch);
-      if (r.championship) setChampionship(r.championship);
+
+      const nextPlayers = Array.isArray(r.players) ? r.players : [];
+      const nextTeams =
+        nextPlayers.length >= 2 && Array.isArray(r.drawnTeams)
+          ? r.drawnTeams
+          : [];
+
+      setPlayers(nextPlayers);
+      if (r.rules) setRules(r.rules as MatchRules);
+      setDrawnTeams(nextTeams);
+      setCoinToss(r.coinToss as CoinTossState);
+      setLiveMatch(r.liveMatch as LiveMatchState);
+      if (r.championship) setChampionship(r.championship as Championship);
+
+      try {
+        localStorage.setItem(
+          LOCAL_STORAGE_KEY,
+          JSON.stringify({
+            players: nextPlayers,
+            drawnTeams: nextTeams,
+            rules: r.rules || rules,
+            updatedAt: r.updatedAt || Date.now(),
+            roomCode,
+          })
+        );
+      } catch {
+        // ignore
+      }
+
       setTimeout(() => {
         isApplyingRemoteRef.current = false;
-      }, 40);
+      }, 50);
     };
 
-    const fetchRoomFromVercelDb = async () => {
-      try {
-        const res = await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`));
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.room) {
-            setIsWsConnected(true);
-            applyRemoteRoom(data.room);
+    const pollFallback = () => {
+      // Bloqueia polling por 8 segundos após mutação local para não conflitar com edições rápidas
+      if (Date.now() - lastUserMutationAtRef.current < 8000) {
+        return;
+      }
+
+      fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`))
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data?.room) return;
+          const serverRoom: RoomState = data.room;
+          setIsWsConnected(true);
+
+          const serverUpdated = Number(serverRoom.updatedAt || 0);
+
+          // Se o container sofreu Cold-Start (isServerSeed: true ou server.updatedAt < local)
+          if (
+            (serverRoom as any).isServerSeed ||
+            (stateUpdatedAtRef.current > 0 && serverUpdated < stateUpdatedAtRef.current)
+          ) {
+            if (stateUpdatedAtRef.current > 0) {
+              // Re-hidrata o servidor com nosso estado local mais recente
+              void fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  roomCode,
+                  payload: {
+                    players,
+                    drawnTeams,
+                    rules,
+                  },
+                  updatedAt: stateUpdatedAtRef.current,
+                }),
+              });
+            }
+            return;
           }
-        }
-      } catch {
-        // Offline / local mode in APK
-      }
+
+          // Servidor possui dados mais recentes de outro dispositivo
+          if (serverUpdated > stateUpdatedAtRef.current) {
+            applyRemoteRoom(serverRoom);
+          }
+        })
+        .catch(() => {
+          // Keep offline state
+        });
     };
 
-    void fetchRoomFromVercelDb();
-
-    // Poll Vercel Database every 5s when WebSocket is not open (e.g. Vercel Serverless / APK)
-    pollTimer = setInterval(() => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        void fetchRoomFromVercelDb();
-      }
-    }, 5000);
-
-    const isHttpOrigin =
-      window.location.protocol === 'http:' || window.location.protocol === 'https:';
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+    pollFallback();
+    pollTimer = setInterval(pollFallback, 6000);
 
     const connect = () => {
-      if (!isHttpOrigin) return;
       try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host;
+        const wsUrl = `${protocol}//${host}/api/live-room`;
+
         socket = new WebSocket(wsUrl);
         wsRef.current = socket;
 
@@ -211,6 +357,9 @@ export default function App() {
             if (data.type === 'room:state' && data.room) {
               applyRemoteRoom(data.room);
             }
+            if (data.type === 'app:force_update') {
+              void otaService.handleRealtimeForceUpdate();
+            }
           } catch {
             // ignore malformed frame
           }
@@ -231,14 +380,21 @@ export default function App() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) socket.close();
     };
-  }, [roomCode]);
+  }, [roomCode, players, drawnTeams, rules]);
 
   // Persist locally for offline APK resilience
   useEffect(() => {
     try {
       localStorage.setItem(
         LOCAL_STORAGE_KEY,
-        JSON.stringify({ players, rules, drawnTeams, championship, roomCode })
+        JSON.stringify({
+          players,
+          rules,
+          drawnTeams,
+          championship,
+          roomCode,
+          updatedAt: stateUpdatedAtRef.current,
+        })
       );
     } catch {
       // ignore storage quota errors
@@ -257,15 +413,42 @@ export default function App() {
     activityText?: string
   ) => {
     if (isApplyingRemoteRef.current) return;
+    const now = Date.now();
+    stateUpdatedAtRef.current = now;
+    lastUserMutationAtRef.current = now;
+
+    const syncPlayers = partial.players ?? players;
+    const syncDrawnTeams =
+      syncPlayers.length < 2
+        ? []
+        : partial.drawnTeams !== undefined
+        ? partial.drawnTeams
+        : drawnTeams;
+
     const syncPayload = {
-      players: partial.players ?? players,
+      players: syncPlayers,
       rules: partial.rules ?? rules,
-      drawnTeams: partial.drawnTeams ?? drawnTeams,
+      drawnTeams: syncDrawnTeams,
       coinToss: partial.coinToss ?? coinToss,
       liveMatch: partial.liveMatch ?? liveMatch,
       championship:
         partial.championship !== undefined ? partial.championship : championship,
     };
+
+    try {
+      localStorage.setItem(
+        LOCAL_STORAGE_KEY,
+        JSON.stringify({
+          players: syncPlayers,
+          drawnTeams: syncDrawnTeams,
+          rules: syncPayload.rules,
+          updatedAt: now,
+          roomCode,
+        })
+      );
+    } catch {
+      // ignore
+    }
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -273,19 +456,29 @@ export default function App() {
           type: 'room:sync_full',
           payload: syncPayload,
           activityText,
+          updatedAt: now,
         })
       );
       return;
     }
 
+    // Cancela requisição HTTP anterior em voo para evitar Race Condition
+    if (syncAbortControllerRef.current) {
+      syncAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    syncAbortControllerRef.current = controller;
+
     // Persist directly to Vercel Database API (/api/rooms/:code)
     void fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({
         roomCode,
         payload: syncPayload,
         activityText,
+        updatedAt: now,
       }),
     })
       .then((res) => (res.ok ? res.json() : null))
@@ -295,9 +488,34 @@ export default function App() {
           setRoomState(data.room);
         }
       })
-      .catch(() => {
-        // offline fallback
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          console.warn('[Sync] Offline fallback');
+        }
       });
+  };
+
+  const handleClearAllPlayers = () => {
+    if (
+      window.confirm(
+        'Iniciar Nova Pelada? Isso removerá todos os atletas da lista e descartará o sorteio anterior.'
+      )
+    ) {
+      setPlayers([]);
+      setDrawnTeams([]);
+      broadcastSync(
+        { players: [], drawnTeams: [], championship: null },
+        'Nova Pelada iniciada: lista e times limpos'
+      );
+    }
+  };
+
+  const handleClearDrawnTeams = () => {
+    setDrawnTeams([]);
+    broadcastSync(
+      { drawnTeams: [] },
+      'Sorteio anterior descartado'
+    );
   };
 
   // Match Countdown Interval
@@ -315,6 +533,7 @@ export default function App() {
         );
 
         if (evalStatus.isFinished) {
+          playWhistleMatchEnd();
           const winnerTeamId =
             evalStatus.winner === 'A'
               ? prev.teamAId
@@ -367,8 +586,11 @@ export default function App() {
     );
     setChampionship(nextChamp);
 
-    // Automatically hide the discreet rigging drawer after drawing so no one sees it
     setShowDiscreetPanel(false);
+    setSelectedTeamView('all');
+    // Auto-navigate user directly to the "Times Sorteados" sub-tab with smooth scroll
+    setDrawSubTab('teams');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 
     broadcastSync(
       {
@@ -424,6 +646,7 @@ export default function App() {
     const nextPlayers = [created, ...players];
     setPlayers(nextPlayers);
     setNewPlayerName('');
+    setIsAddPlayerModalOpen(false);
     broadcastSync(
       { players: nextPlayers },
       `${created.name} adicionado à lista (${created.isGoalkeeper ? 'Goleiro' : 'Linha'})`
@@ -444,10 +667,72 @@ export default function App() {
     setPlayers(nextPlayers);
     const nextTeams = drawTeams(nextPlayers, rules, rigging);
     setDrawnTeams(nextTeams);
+    setDrawSubTab('teams');
     broadcastSync(
       { players: nextPlayers, drawnTeams: nextTeams },
       `Lista do WhatsApp importada (${withIds.length} atletas)`
     );
+  };
+
+  const handleGuestAddPlayer = async (newPlayer: Player) => {
+    setPlayers((prev) => {
+      if (prev.some((p) => p.id === newPlayer.id || p.name.toLowerCase().trim() === newPlayer.name.toLowerCase().trim())) {
+        return prev;
+      }
+      return [...prev, newPlayer];
+    });
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'room:add_player',
+          player: newPlayer,
+        })
+      );
+    }
+
+    try {
+      await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomCode,
+          action: 'add_player',
+          player: newPlayer,
+        }),
+      });
+    } catch (err) {
+      console.error('Falha ao sincronizar novo jogador na nuvem:', err);
+    }
+  };
+
+  const handleGuestTogglePresence = async (playerId: string) => {
+    setPlayers((prev) =>
+      prev.map((p) => (p.id === playerId ? { ...p, confirmed: !p.confirmed } : p))
+    );
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'room:toggle_presence',
+          playerId,
+        })
+      );
+    }
+
+    try {
+      await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomCode,
+          action: 'toggle_presence',
+          playerId,
+        }),
+      });
+    } catch (err) {
+      console.error('Falha ao alternar presença na nuvem:', err);
+    }
   };
 
   const handleToggleHostPlayer = (playerId: string) => {
@@ -538,22 +823,32 @@ export default function App() {
         window.history.replaceState({}, '', `/?room=${data.room.code}`);
       }
     } catch {
-      // fallback code
       const fallbackCode = `FUT-${Math.floor(100 + Math.random() * 900)}`;
       setRoomCode(fallbackCode);
       window.history.replaceState({}, '', `/?room=${fallbackCode}`);
     }
   };
 
-  const confirmedPlayers = players.filter((p) => p.confirmed);
-  const confirmedGks = confirmedPlayers.filter((p) => p.isGoalkeeper);
-  const confirmedLine = confirmedPlayers.filter((p) => !p.isGoalkeeper);
+  const confirmedPlayers = useMemo(() => players.filter((p) => p.confirmed), [players]);
+  const confirmedGks = useMemo(
+    () => confirmedPlayers.filter((p) => p.isGoalkeeper),
+    [confirmedPlayers]
+  );
+  const confirmedLine = useMemo(
+    () => confirmedPlayers.filter((p) => !p.isGoalkeeper),
+    [confirmedPlayers]
+  );
 
-  const filteredRoster = players.filter((p) => {
-    if (rosterFilter === 'gk') return p.isGoalkeeper;
-    if (rosterFilter === 'line') return !p.isGoalkeeper;
-    return true;
-  });
+  const filteredRoster = useMemo(() => {
+    return players.filter((p) => {
+      const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
+      if (!matchesSearch) return false;
+      if (rosterFilter === 'present') return p.confirmed;
+      if (rosterFilter === 'gk') return p.isGoalkeeper;
+      if (rosterFilter === 'line') return !p.isGoalkeeper;
+      return true;
+    });
+  }, [players, searchQuery, rosterFilter]);
 
   const hostPlayer = players.find((p) => p.isHost);
 
@@ -569,26 +864,57 @@ export default function App() {
     setTimeout(() => setPdfExported(false), 3000);
   };
 
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-20 md:pb-10">
-      {/* Strict 3-Zone Top Bar Contract */}
-      <header className="sticky top-0 z-30 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/90 px-4 sm:px-8 py-3.5 flex items-center justify-between gap-8">
-        {/* Zone 1: Single text element wordmark */}
-        <a
-          href="#top"
-          onClick={(e) => {
-            e.preventDefault();
-            setActiveTab('draw');
-          }}
-          className="text-xl font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0"
-        >
-          PeladaPro
-        </a>
+  const displayedTeams =
+    selectedTeamView === 'all'
+      ? drawnTeams
+      : drawnTeams[selectedTeamView]
+      ? [drawnTeams[selectedTeamView]]
+      : drawnTeams;
 
-        {/* Zone 2: 4 concise single-line text navigation links */}
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-24 md:pb-12">
+      <OtaUpdateOverlay />
+      {/* Strict 3-Zone Top Bar Contract */}
+      <header className="sticky top-0 z-30 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/90 px-3 sm:px-8 py-3 flex items-center justify-between gap-4">
+        {/* Zone 1: Wordmark with Secret 5-Tap VIP Generator + Trial Badge */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const next = logoTaps + 1;
+              setLogoTaps(next);
+              if (next >= 5) {
+                setIsVipModalOpen(true);
+                setLogoTaps(0);
+              }
+            }}
+            className="text-lg sm:text-xl font-black tracking-tight text-slate-100 whitespace-nowrap shrink-0 flex items-center gap-1.5 active:scale-95 transition-transform"
+            title="Toque 5x para Gerador Mestre de Chaves"
+          >
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span>PeladaPro</span>
+          </button>
+
+          {/* License Badge */}
+          <button
+            type="button"
+            onClick={() => setIsVipModalOpen(true)}
+            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all active:scale-90 ${
+              license.isVip
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                : license.isTrialActive
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'
+            }`}
+          >
+            {license.isVip ? '⭐ VIP' : license.isTrialActive ? `⏱️ ${license.daysRemaining}d` : '🔒 Expirado'}
+          </button>
+        </div>
+
+        {/* Zone 2: Desktop 4 concise navigation links */}
         <nav
           aria-label="Navegação Principal"
-          className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-400"
+          className="hidden md:flex items-center gap-6 text-sm font-semibold text-slate-400"
         >
           <button
             type="button"
@@ -636,531 +962,360 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: 1 primary action */}
-        <div className="flex items-center gap-3 shrink-0">
+        {/* Zone 3: Header Actions */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Sound Toggle Button */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = !soundActive;
+              setSoundActive(next);
+              setSoundEnabled(next);
+            }}
+            className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition-colors"
+            title={soundActive ? 'Desativar Som do Apito' : 'Ativar Som do Apito'}
+          >
+            {soundActive ? <Volume2 className="w-4 h-4 text-emerald-400" /> : <VolumeX className="w-4 h-4 text-slate-500" />}
+          </button>
+
+          {/* Rateio Pix Button */}
+          <button
+            type="button"
+            onClick={() => setIsPixModalOpen(true)}
+            className="px-2.5 sm:px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all active:scale-95"
+            title="Dividir quadra e cobrar via Pix"
+          >
+            <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">Rateio Pix</span>
+          </button>
+
+          {/* WhatsApp Button */}
           <button
             type="button"
             onClick={() => setIsWhatsAppOpen(true)}
-            className="px-4 py-2 text-xs font-semibold text-slate-950 bg-emerald-500 hover:bg-emerald-400 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
+            className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition-all active:scale-95 whitespace-nowrap shrink-0 flex items-center gap-1.5 shadow-md shadow-emerald-500/20"
           >
             <FileSpreadsheet className="w-3.5 h-3.5" />
-            Lista do WhatsApp
+            <span className="hidden sm:inline">WhatsApp</span>
           </button>
         </div>
       </header>
 
-      {/* Main Content Container (1440px Desktop Presence) */}
-      <main className="max-w-7xl w-full mx-auto px-4 sm:px-8 pt-6 space-y-6 flex-1">
-        {/* Contextual Workspace Strip */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-              <span>Formato Ativo:</span>
-              <strong className="text-emerald-400 tabular-nums">
-                {rules.linePlayersPerTeam} na Linha + {rules.goalkeepersPerTeam} no Gol
-              </strong>
-              <span aria-hidden="true">·</span>
-              <span className="tabular-nums">Duração: {rules.durationMinutes} min</span>
-              <span aria-hidden="true">·</span>
-              <span className="tabular-nums">
-                Limite: {rules.goalLimit ? `${rules.goalLimit} Gols` : 'Sem limite'}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span className="tabular-nums">
-                {confirmedLine.length} Linha / {confirmedGks.length} Goleiros confirmados
-              </span>
-            </div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-slate-100 tracking-tight">
-              Sorteio Inteligente de Times, Arbitragem & Campeonatos
-            </h1>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            {/* Discreet Calibration Trigger ("Modo Panela Invisível" disguised as innocent Parâmetros button) */}
-            <button
-              type="button"
-              onClick={() => setShowDiscreetPanel(!showDiscreetPanel)}
-              title="Parâmetros Avançados e Calibragem do Sorteio"
-              className="px-3.5 py-2.5 text-xs font-medium rounded-xl border bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
-              Parâmetros
-            </button>
-
-            <button
-              type="button"
-              onClick={handleExecuteDraw}
-              className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition-colors flex items-center gap-2 whitespace-nowrap shrink-0 shadow-lg shadow-emerald-950/50"
-            >
-              <Shuffle className="w-4 h-4" />
-              Sortear Times Agora
-            </button>
-          </div>
-        </div>
-
-        {/* Discreet Rigging ("Modo Panela Invisível") Drawer */}
-        {showDiscreetPanel && (
-          <section
-            aria-label="Configuração de Sorteio Discreto"
-            className="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 space-y-4"
-          >
-            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-800 pb-4">
-              <div>
-                <div className="flex items-center gap-2 text-xs text-amber-400 font-medium">
-                  <EyeOff className="w-3.5 h-3.5" />
-                  <span>Modo Panela Invisível · Oculto Automaticamente ao Sortear</span>
-                </div>
-                <h2 className="text-lg font-bold text-slate-100 mt-0.5">
-                  Jogar com os Melhores Jogadores Sem Ninguém Saber
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Quando ativado, o sorteio coloca você ({hostPlayer?.name || 'Organizador'}) junto com os melhores craques e o melhor goleiro, mantendo a aparência de um sorteio 100% aleatório.
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(rigging.camouflageStars)}
-                    onChange={(e) =>
-                      setRigging((prev) => ({
-                        ...prev,
-                        camouflageStars: e.target.checked,
-                      }))
-                    }
-                    className="rounded border-slate-700 bg-slate-900 text-emerald-500"
-                  />
-                  Camuflar Média de Estrelas (4.2★)
-                </label>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setRigging((prev) => ({ ...prev, enabled: !prev.enabled }))
-                  }
-                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors whitespace-nowrap ${
-                    rigging.enabled
-                      ? 'bg-amber-400 text-slate-950'
-                      : 'bg-slate-950 text-slate-300 border border-slate-800'
-                  }`}
-                >
-                  {rigging.enabled
-                    ? 'Modo Panela: ATIVADO (Invisível)'
-                    : 'Ativar Modo Panela Secreto'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowDiscreetPanel(false)}
-                  className="px-3 py-2 rounded-xl text-xs font-medium bg-slate-950 hover:bg-slate-800 text-slate-400 border border-slate-800 whitespace-nowrap"
-                >
-                  Ocultar Painel
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
-                <div className="font-semibold text-slate-200">
-                  1. Quem é você na lista?
-                </div>
-                <p className="text-slate-400">
-                  Selecione seu nome para garantir que você saia no Time A titular:
-                </p>
-                <select
-                  aria-label="Selecionar meu jogador"
-                  value={hostPlayer?.id || ''}
-                  onChange={(e) => handleToggleHostPlayer(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-100"
-                >
-                  {players.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.rating}★)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
-                <div className="font-semibold text-slate-200">
-                  2. Estratégia de Favorecimento
-                </div>
-                <div className="space-y-1.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setRigging((prev) => ({
-                        ...prev,
-                        enabled: true,
-                        mode: 'top_stars',
-                      }))
-                    }
-                    className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${
-                      rigging.enabled && rigging.mode === 'top_stars'
-                        ? 'bg-amber-500/15 border-amber-400 text-amber-300 font-semibold'
-                        : 'bg-slate-900 border-slate-800 text-slate-300'
-                    }`}
-                  >
-                    Automático: Puxar os Jogadores 5★ + Melhor Goleiro
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setRigging((prev) => ({
-                        ...prev,
-                        enabled: true,
-                        mode: 'handpicked',
-                      }))
-                    }
-                    className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${
-                      rigging.enabled && rigging.mode === 'handpicked'
-                        ? 'bg-amber-500/15 border-amber-400 text-amber-300 font-semibold'
-                        : 'bg-slate-900 border-slate-800 text-slate-300'
-                    }`}
-                  >
-                    Manual: Escolher Parceiros Fixos na Lista Abaixo
-                  </button>
-                </div>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
-                <div className="font-semibold text-slate-200">
-                  3. Parceiros Fixados ({rigging.pinnedTeammateIds.length}) & Rivais Evitados ({rigging.excludedRivalIds.length})
-                </div>
-                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                  {players
-                    .filter((p) => !p.isHost)
-                    .map((p) => {
-                      const isPinned = rigging.pinnedTeammateIds.includes(p.id);
-                      const isExcluded = rigging.excludedRivalIds.includes(p.id);
-                      return (
-                        <div key={p.id} className="inline-flex items-center rounded-md overflow-hidden border border-slate-800 bg-slate-900">
-                          <button
-                            type="button"
-                            onClick={() => handleTogglePinTeammate(p.id)}
-                            title={`Fixar ${p.name} no seu time`}
-                            className={`px-2 py-1 transition-colors ${
-                              isPinned
-                                ? 'bg-emerald-950 text-emerald-300 font-semibold'
-                                : 'text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            {isPinned ? '✓ ' : '+ '}
-                            {p.name.split(' ')[0]} ({p.rating}★)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleExcludeRival(p.id)}
-                            title={`Evitar ${p.name} no seu time`}
-                            aria-label={`Evitar ${p.name} no seu time`}
-                            className={`px-1.5 py-1 border-l border-slate-800 transition-colors ${
-                              isExcluded
-                                ? 'bg-red-950 text-red-300 font-bold'
-                                : 'text-slate-500 hover:text-red-400'
-                            }`}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      );
-                    })}
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
-
+      {/* Main Content Area */}
+      <main className="max-w-6xl w-full mx-auto px-3 sm:px-6 pt-3 sm:pt-6 space-y-4 flex-1">
         {/* TAB 1: SORTEIO & ELENCO */}
         {activeTab === 'draw' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left 5 Cols: Custom Rules & Player Roster */}
-            <div className="lg:col-span-5 space-y-6">
-              {/* Match Format & Rules Customizer */}
-              <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
-                <div className="flex items-center justify-between">
+          <div className="space-y-4">
+            {/* SUB-ABAS FIXAS DO SORTEIO */}
+            <SubTabNavigation<DrawSubTab>
+              activeTab={drawSubTab}
+              onChange={setDrawSubTab}
+              tabs={[
+                {
+                  id: 'players',
+                  label: 'Jogadores',
+                  icon: Users,
+                  badge: `${confirmedPlayers.length}/${players.length}`,
+                },
+                {
+                  id: 'teams',
+                  label: 'Times Sorteados',
+                  icon: Shield,
+                  badge: drawnTeams.length > 0 ? drawnTeams.length : undefined,
+                  highlight: drawnTeams.length > 0,
+                },
+                {
+                  id: 'rules',
+                  label: 'Regras & Formato',
+                  icon: SlidersHorizontal,
+                  badge: `${rules.linePlayersPerTeam}+${rules.goalkeepersPerTeam}`,
+                },
+              ]}
+            />
+
+            {/* Discreet Rigging Drawer ("Modo Panela Invisível") */}
+            {showDiscreetPanel && (
+              <section
+                aria-label="Configuração de Sorteio Discreto"
+                className="bg-slate-900 border border-amber-500/30 rounded-2xl p-4 sm:p-6 space-y-4 animate-slideDown"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-3">
                   <div>
-                    <div className="text-xs text-slate-400">
-                      Formação, Tempo e Limite de Gols
+                    <div className="flex items-center gap-2 text-xs text-amber-400 font-bold">
+                      <EyeOff className="w-3.5 h-3.5" />
+                      <span>Modo Panela Invisível · Oculto Automaticamente ao Sortear</span>
                     </div>
-                    <h2 className="text-lg font-bold text-slate-100 mt-0.5 flex items-center gap-2">
-                      <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
-                      Regras da Partida Personalizadas
+                    <h2 className="text-base sm:text-lg font-bold text-slate-100 mt-0.5">
+                      Jogar com os Melhores Jogadores Sem Ninguém Saber
                     </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Quando ativado, o sorteio coloca você ({hostPlayer?.name || 'Organizador'}) com os melhores craques, mantendo a aparência de um sorteio 100% equilibrado.
+                    </p>
                   </div>
-                </div>
 
-                {/* Quick Formation Presets (3+1, 4+1, 5+1, 10+1, etc.) */}
-                <div className="space-y-2">
-                  <span className="text-xs font-medium text-slate-300 block">
-                    Modalidade Rápida (ou personalize abaixo):
-                  </span>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {FORMATION_PRESETS.map((preset) => {
-                      const isSelected =
-                        rules.linePlayersPerTeam === preset.line &&
-                        rules.goalkeepersPerTeam === preset.gk;
-                      return (
-                        <button
-                          key={preset.label}
-                          type="button"
-                          onClick={() =>
-                            handleUpdateRules({
-                              ...rules,
-                              linePlayersPerTeam: preset.line,
-                              goalkeepersPerTeam: preset.gk,
-                            })
-                          }
-                          className={`px-3 py-2 text-xs font-semibold rounded-xl border transition-colors whitespace-nowrap truncate ${
-                            isSelected
-                              ? 'bg-emerald-500/15 border-emerald-500 text-emerald-300'
-                              : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Custom Steppers: Jogadores na Linha, Goleiro, Tempo, Limite de Gols */}
-                <div className="grid grid-cols-2 gap-3 pt-1">
-                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
-                    <label
-                      htmlFor="input-line-players"
-                      className="text-xs text-slate-400 block"
-                    >
-                      Jogadores na Linha
-                    </label>
-                    <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer select-none">
                       <input
-                        id="input-line-players"
-                        type="number"
-                        min={1}
-                        max={11}
-                        value={rules.linePlayersPerTeam}
+                        type="checkbox"
+                        checked={Boolean(rigging.camouflageStars)}
                         onChange={(e) =>
-                          handleUpdateRules({
-                            ...rules,
-                            linePlayersPerTeam: Math.max(
-                              1,
-                              Math.min(11, Number(e.target.value) || 5)
-                            ),
-                          })
+                          setRigging((prev) => ({
+                            ...prev,
+                            camouflageStars: e.target.checked,
+                          }))
                         }
-                        className="w-16 px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg font-mono text-sm font-bold text-slate-100 tabular-nums"
+                        className="rounded border-slate-700 bg-slate-900 text-emerald-500"
                       />
-                      <span className="text-xs text-slate-400">por time</span>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
-                    <label
-                      htmlFor="select-gk-per-team"
-                      className="text-xs text-slate-400 block"
-                    >
-                      Goleiro por Time
+                      Camuflar Estrelas (4.2★)
                     </label>
-                    <select
-                      id="select-gk-per-team"
-                      value={rules.goalkeepersPerTeam}
-                      onChange={(e) =>
-                        handleUpdateRules({
-                          ...rules,
-                          goalkeepersPerTeam: Number(e.target.value),
-                        })
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRigging((prev) => ({ ...prev, enabled: !prev.enabled }))
                       }
-                      className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-semibold text-slate-100"
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 ${
+                        rigging.enabled
+                          ? 'bg-amber-400 text-slate-950'
+                          : 'bg-slate-950 text-slate-300 border border-slate-800'
+                      }`}
                     >
-                      <option value={1}>1 no Gol ({rules.linePlayersPerTeam}+1)</option>
-                      <option value={0}>Sem Goleiro Fixo</option>
+                      {rigging.enabled
+                        ? 'Modo Panela: ATIVADO (Invisível)'
+                        : 'Ativar Modo Panela Secreto'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowDiscreetPanel(false)}
+                      className="px-3 py-2 rounded-xl text-xs font-medium bg-slate-950 hover:bg-slate-800 text-slate-400 border border-slate-800 whitespace-nowrap"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-2">
+                    <div className="font-bold text-slate-200">
+                      1. Quem é você na lista?
+                    </div>
+                    <select
+                      aria-label="Selecionar meu jogador"
+                      value={hostPlayer?.id || ''}
+                      onChange={(e) => handleToggleHostPlayer(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-100"
+                    >
+                      {players.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.rating}★)
+                        </option>
+                      ))}
                     </select>
                   </div>
 
-                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
-                    <label
-                      htmlFor="input-duration-mins"
-                      className="text-xs text-slate-400 block"
-                    >
-                      Tempo da Partida (min)
-                    </label>
-                    <div className="flex items-center justify-between gap-2">
-                      <input
-                        id="input-duration-mins"
-                        type="number"
-                        min={1}
-                        max={90}
-                        value={rules.durationMinutes}
-                        onChange={(e) =>
-                          handleUpdateRules({
-                            ...rules,
-                            durationMinutes: Math.max(
-                              1,
-                              Math.min(90, Number(e.target.value) || 10)
-                            ),
-                          })
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-2">
+                    <div className="font-bold text-slate-200">
+                      2. Estratégia
+                    </div>
+                    <div className="space-y-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRigging((prev) => ({
+                            ...prev,
+                            enabled: true,
+                            mode: 'top_stars',
+                          }))
                         }
-                        className="w-16 px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg font-mono text-sm font-bold text-slate-100 tabular-nums"
-                      />
-                      <span className="text-xs text-slate-400">minutos</span>
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${
+                          rigging.enabled && rigging.mode === 'top_stars'
+                            ? 'bg-amber-500/15 border-amber-400 text-amber-300'
+                            : 'bg-slate-900 border-slate-800 text-slate-300'
+                        }`}
+                      >
+                        Craques 5★ + Melhor Goleiro
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRigging((prev) => ({
+                            ...prev,
+                            enabled: true,
+                            mode: 'handpicked',
+                          }))
+                        }
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${
+                          rigging.enabled && rigging.mode === 'handpicked'
+                            ? 'bg-amber-500/15 border-amber-400 text-amber-300'
+                            : 'bg-slate-900 border-slate-800 text-slate-300'
+                        }`}
+                      >
+                        Parceiros Fixos Escolhidos Manualmente
+                      </button>
                     </div>
                   </div>
 
-                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
-                    <label
-                      htmlFor="select-goal-limit"
-                      className="text-xs text-slate-400 block"
-                    >
-                      Fim por Limite de Gols
-                    </label>
-                    <select
-                      id="select-goal-limit"
-                      value={rules.goalLimit ?? 0}
-                      onChange={(e) => {
-                        const val = Number(e.target.value);
-                        handleUpdateRules({
-                          ...rules,
-                          goalLimit: val === 0 ? null : val,
-                        });
-                      }}
-                      className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-semibold text-slate-100"
-                    >
-                      <option value={1}>1 Gol (Gol de Ouro)</option>
-                      <option value={2}>2 Gols (Padrão Society)</option>
-                      <option value={3}>3 Gols</option>
-                      <option value={4}>4 Gols</option>
-                      <option value={5}>5 Gols</option>
-                      <option value={0}>Sem Limite de Gols</option>
-                    </select>
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-2">
+                    <div className="font-bold text-slate-200">
+                      3. Parceiros ({rigging.pinnedTeammateIds.length}) & Evitados ({rigging.excludedRivalIds.length})
+                    </div>
+                    <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto">
+                      {players
+                        .filter((p) => !p.isHost)
+                        .map((p) => {
+                          const isPinned = rigging.pinnedTeammateIds.includes(p.id);
+                          const isExcluded = rigging.excludedRivalIds.includes(p.id);
+                          return (
+                            <div key={p.id} className="inline-flex items-center rounded-lg overflow-hidden border border-slate-800 bg-slate-900">
+                              <button
+                                type="button"
+                                onClick={() => handleTogglePinTeammate(p.id)}
+                                className={`px-2 py-1 text-xs ${
+                                  isPinned
+                                    ? 'bg-emerald-950 text-emerald-300 font-bold'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                {isPinned ? '✓ ' : '+ '}
+                                {p.name.split(' ')[0]}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleExcludeRival(p.id)}
+                                aria-label={`Evitar ${p.name}`}
+                                className={`px-1.5 py-1 text-xs border-l border-slate-800 ${
+                                  isExcluded
+                                    ? 'bg-red-950 text-red-300 font-black'
+                                    : 'text-slate-500 hover:text-red-400'
+                                }`}
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          );
+                        })}
+                    </div>
                   </div>
                 </div>
               </section>
+            )}
 
-              {/* Player Roster Management */}
-              <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <div className="text-xs text-slate-400">
-                      Elenco Confirmado ({confirmedPlayers.length} atletas)
+            {/* =========================================================
+                SUB-ABA 1.1: LISTA DE JOGADORES & PRESENÇA
+            ========================================================= */}
+            {drawSubTab === 'players' && (
+              <div className="space-y-4">
+                {/* Compact Summary Strip + Add Player Button */}
+                <div className="flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 p-3 sm:p-4 rounded-2xl">
+                  <div className="flex items-center gap-2 sm:gap-4">
+                    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-1.5 text-center">
+                      <span className="block text-base sm:text-lg font-black text-emerald-400 leading-none">
+                        {confirmedPlayers.length}
+                      </span>
+                      <span className="text-[10px] uppercase font-bold text-slate-400">
+                        Confirmados
+                      </span>
                     </div>
-                    <h2 className="text-lg font-bold text-slate-100 mt-0.5">
-                      Lista de Jogadores & Goleiros
-                    </h2>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsWhatsAppOpen(true)}
-                    className="text-xs font-semibold text-emerald-400 hover:text-emerald-300 whitespace-nowrap"
-                  >
-                    Colar do WhatsApp
-                  </button>
-                </div>
 
-                {/* Add Single Player Form */}
-                <form
-                  onSubmit={handleAddPlayer}
-                  className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-3"
-                >
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-1.5 text-center">
+                      <span className="block text-base sm:text-lg font-black text-amber-400 leading-none">
+                        {confirmedGks.length}
+                      </span>
+                      <span className="text-[10px] uppercase font-bold text-slate-400">
+                        Goleiros
+                      </span>
+                    </div>
+
+                    <div className="hidden sm:block text-xs text-slate-400">
+                      Formato: <strong className="text-slate-200">{rules.linePlayersPerTeam}+{rules.goalkeepersPerTeam}</strong> · {rules.durationMinutes} min
+                    </div>
+                  </div>
+
                   <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      placeholder="Adicionar jogador (ex: Neymar Jr)..."
-                      aria-label="Nome do novo jogador"
-                      value={newPlayerName}
-                      onChange={(e) => setNewPlayerName(e.target.value)}
-                      className="flex-1 px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100"
-                    />
+                    {players.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleClearAllPlayers}
+                        className="flex items-center gap-1.5 bg-slate-900 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-slate-800 hover:border-red-500/30 text-xs font-bold px-3 py-2.5 rounded-xl active:scale-95 transition-all whitespace-nowrap"
+                        title="Limpar todos os jogadores e iniciar nova pelada do zero"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Nova Pelada</span>
+                      </button>
+                    )}
                     <button
-                      type="submit"
-                      className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs rounded-lg flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
+                      type="button"
+                      onClick={() => setIsAddPlayerModalOpen(true)}
+                      className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs px-3.5 sm:px-4 py-2.5 rounded-xl shadow-lg shadow-emerald-500/20 active:scale-95 transition-all whitespace-nowrap"
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      Adicionar
+                      <UserPlus className="w-4 h-4 stroke-[2.5px]" />
+                      <span>+ Atleta</span>
                     </button>
                   </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <label className="flex items-center gap-2 text-slate-300 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={newPlayerIsGk}
-                        onChange={(e) => setNewPlayerIsGk(e.target.checked)}
-                        className="rounded border-slate-700 bg-slate-900 text-emerald-500"
-                      />
-                      Joga no Gol (Goleiro Fixo)
-                    </label>
-
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-slate-400">Nível:</span>
-                      {[1, 2, 3, 4, 5].map((star) => (
-                        <button
-                          key={star}
-                          type="button"
-                          onClick={() => setNewPlayerRating(star)}
-                          aria-label={`Definir nível ${star} estrelas`}
-                          className={`px-1.5 py-0.5 rounded font-mono text-xs ${
-                            newPlayerRating >= star
-                              ? 'text-amber-400 font-bold'
-                              : 'text-slate-600'
-                          }`}
-                        >
-                          ★
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </form>
-
-                {/* Filter Segmented Control */}
-                <div className="flex items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl">
-                  <button
-                    type="button"
-                    onClick={() => setRosterFilter('all')}
-                    className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-                      rosterFilter === 'all'
-                        ? 'bg-slate-800 text-slate-100'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    Todos ({players.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRosterFilter('line')}
-                    className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-                      rosterFilter === 'line'
-                        ? 'bg-slate-800 text-slate-100'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    Linha ({players.filter((p) => !p.isGoalkeeper).length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRosterFilter('gk')}
-                    className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-                      rosterFilter === 'gk'
-                        ? 'bg-slate-800 text-slate-100'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    Goleiros ({players.filter((p) => p.isGoalkeeper).length})
-                  </button>
                 </div>
 
-                {/* Roster Items */}
-                <div className="divide-y divide-slate-800/70 max-h-96 overflow-y-auto pr-1">
-                  {filteredRoster.map((player) => (
-                    <div
-                      key={player.id}
-                      className="py-2.5 flex items-center justify-between gap-2 text-xs"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={player.confirmed}
-                          aria-label={`Confirmar presença de ${player.name}`}
-                          onChange={() => {
+                {/* Search Bar + Quick Filter Pills */}
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Buscar jogador por nome..."
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-10 pr-9 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                    {[
+                      { id: 'all', label: `Todos (${players.length})` },
+                      { id: 'present', label: `Confirmados (${confirmedPlayers.length})` },
+                      { id: 'line', label: `Linha (${players.filter((p) => !p.isGoalkeeper).length})` },
+                      { id: 'gk', label: `Goleiros (${players.filter((p) => p.isGoalkeeper).length})` },
+                    ].map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setRosterFilter(f.id as any)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${
+                          rosterFilter === f.id
+                            ? 'bg-slate-200 text-slate-950 shadow'
+                            : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-slate-200'
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Fast Roster List */}
+                <div className="space-y-2">
+                  {filteredRoster.map((player) => {
+                    const isGK = player.isGoalkeeper;
+                    return (
+                      <div
+                        key={player.id}
+                        className={`flex items-center justify-between p-3 rounded-2xl border transition-all ${
+                          player.confirmed
+                            ? 'bg-slate-900/95 border-emerald-500/40 shadow-sm'
+                            : 'bg-slate-950/60 border-slate-800/70 opacity-60'
+                        }`}
+                      >
+                        {/* Tap to Toggle Presence */}
+                        <button
+                          type="button"
+                          onClick={() => {
                             const next = players.map((p) =>
                               p.id === player.id ? { ...p, confirmed: !p.confirmed } : p
                             );
@@ -1172,144 +1327,449 @@ export default function App() {
                               }`
                             );
                           }}
-                          className="rounded border-slate-700 bg-slate-950 text-emerald-500"
-                        />
-                        <div className="min-w-0">
-                          <div className="font-medium text-slate-100 truncate flex items-center gap-1.5">
-                            <span>{player.name}</span>
-                            {player.isHost && (
-                              <Crown
-                                className="w-3.5 h-3.5 text-amber-400 shrink-0"
-                                aria-label="Organizador"
-                              />
-                            )}
+                          className="flex items-center gap-3 flex-1 text-left min-w-0 py-1"
+                        >
+                          {player.confirmed ? (
+                            <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-400 shrink-0 fill-emerald-500/20" />
+                          ) : (
+                            <Circle className="w-5 h-5 sm:w-6 sm:h-6 text-slate-600 shrink-0" />
+                          )}
+
+                          <div className="truncate">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-xs sm:text-sm text-white truncate">
+                                {player.name}
+                              </span>
+                              {player.isHost && (
+                                <Crown
+                                  className="w-3.5 h-3.5 text-amber-400 shrink-0"
+                                  aria-label="Organizador"
+                                />
+                              )}
+                              <span
+                                className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase shrink-0 ${
+                                  isGK
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    : 'bg-slate-800 text-slate-300'
+                                }`}
+                              >
+                                {isGK ? 'GOL' : 'LIN'}
+                              </span>
+                            </div>
+
+                            {/* 1-Click Star Rating Rating Bar */}
+                            <div className="flex items-center gap-0.5 mt-1">
+                              {[1, 2, 3, 4, 5].map((star) => (
+                                <span
+                                  key={star}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const next = players.map((p) =>
+                                      p.id === player.id ? { ...p, rating: star } : p
+                                    );
+                                    setPlayers(next);
+                                    broadcastSync({ players: next });
+                                  }}
+                                  className="p-0.5 cursor-pointer"
+                                  title={`${star} estrelas`}
+                                >
+                                  <Star
+                                    className={`w-3.5 h-3.5 ${
+                                      star <= player.rating
+                                        ? 'text-amber-400 fill-amber-400'
+                                        : 'text-slate-700'
+                                    }`}
+                                  />
+                                </span>
+                              ))}
+                              <span className="text-[11px] font-mono text-slate-400 ml-1 tabular-nums">
+                                {player.rating}★
+                              </span>
+                            </div>
                           </div>
-                          <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const next = players.map((p) =>
-                                  p.id === player.id
-                                    ? { ...p, isGoalkeeper: !p.isGoalkeeper }
-                                    : p
-                                );
-                                setPlayers(next);
-                                broadcastSync({ players: next });
-                              }}
-                              className="hover:text-slate-200 underline decoration-slate-700"
-                            >
-                              {player.isGoalkeeper ? 'Goleiro' : 'Linha'}
-                            </button>
-                            <span aria-hidden="true">·</span>
-                            <span className="font-mono text-amber-400 tabular-nums">
-                              {player.rating}★
-                            </span>
-                          </div>
+                        </button>
+
+                        {/* Right Role Toggle & Delete Actions */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedFifaPlayer(player);
+                              setIsFifaCardOpen(true);
+                            }}
+                            className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 transition-all active:scale-90"
+                            title="Gerar Cartinha EA FC / FIFA"
+                          >
+                            <Trophy className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = players.map((p) =>
+                                p.id === player.id
+                                  ? { ...p, isGoalkeeper: !p.isGoalkeeper }
+                                  : p
+                              );
+                              setPlayers(next);
+                              broadcastSync({ players: next });
+                            }}
+                            className="px-2 py-1 text-[11px] font-semibold rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors"
+                          >
+                            {player.isGoalkeeper ? 'Para Linha' : 'Para o Gol'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = players.filter((p) => p.id !== player.id);
+                              setPlayers(next);
+                              const nextTeams = next.length < 2 ? [] : drawnTeams;
+                              setDrawnTeams(nextTeams);
+                              setRigging((prev) => ({
+                                ...prev,
+                                pinnedTeammateIds: prev.pinnedTeammateIds.filter(
+                                  (id) => id !== player.id
+                                ),
+                                excludedRivalIds: prev.excludedRivalIds.filter(
+                                  (id) => id !== player.id
+                                ),
+                              }));
+                              broadcastSync(
+                                { players: next, drawnTeams: nextTeams },
+                                `${player.name} removido da lista`
+                              );
+                            }}
+                            aria-label={`Remover ${player.name}`}
+                            className="p-1.5 text-slate-500 hover:text-red-400 active:scale-90 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
+                    );
+                  })}
+                </div>
 
-                      <div className="flex items-center gap-1 shrink-0">
+                {/* Floating Bottom Action: Sortear Times */}
+                <div className="sticky bottom-16 sm:bottom-4 z-20 pt-2 pb-1 bg-gradient-to-t from-slate-950 via-slate-950/95 to-transparent">
+                  <button
+                    type="button"
+                    onClick={handleExecuteDraw}
+                    disabled={confirmedPlayers.length < 2}
+                    className="w-full flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-black text-sm sm:text-base py-3.5 sm:py-4 rounded-2xl shadow-xl shadow-emerald-500/25 active:scale-98 transition-all"
+                  >
+                    <Shuffle className="w-5 h-5 stroke-[2.5px]" />
+                    <span>SORTEAR TIMES ({confirmedPlayers.length} ATLETAS PRONTOS)</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* =========================================================
+                SUB-ABA 1.2: TIMES SORTEADOS & ESQUEMA TÁTICO
+            ========================================================= */}
+            {drawSubTab === 'teams' && (
+              <div className="space-y-4">
+                {drawnTeams.length === 0 ? (
+                  <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center space-y-4 my-4">
+                    <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mx-auto text-emerald-400">
+                      <Shield className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <h3 className="text-base sm:text-lg font-black text-white">
+                        Nenhum time sorteado ainda
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                        Você tem {confirmedPlayers.length} atletas confirmados na lista prontos para entrar em campo.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleExecuteDraw}
+                      className="inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black px-6 py-3 rounded-xl shadow-lg shadow-emerald-500/20 active:scale-95"
+                    >
+                      <Shuffle className="w-4 h-4" />
+                      <span>Sortear Times Agora</span>
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* Top Action Bar */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 border border-slate-800 p-3 rounded-2xl">
+                      <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => {
-                            const nextRating = (player.rating % 5) + 1;
-                            const next = players.map((p) =>
-                              p.id === player.id ? { ...p, rating: nextRating } : p
-                            );
-                            setPlayers(next);
-                            broadcastSync({ players: next });
-                          }}
-                          aria-label={`Alterar estrelas de ${player.name}`}
-                          className="px-2 py-1 rounded bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 font-mono tabular-nums"
+                          onClick={handleExecuteDraw}
+                          className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs rounded-xl flex items-center gap-1.5 transition-all active:scale-95 shadow-md shadow-emerald-500/20"
                         >
-                          {player.rating}★
+                          <Shuffle className="w-4 h-4" />
+                          <span>Refazer Sorteio</span>
                         </button>
+
                         <button
                           type="button"
-                          onClick={() => {
-                            const next = players.filter((p) => p.id !== player.id);
-                            setPlayers(next);
-                            setRigging((prev) => ({
-                              ...prev,
-                              pinnedTeammateIds: prev.pinnedTeammateIds.filter(
-                                (id) => id !== player.id
-                              ),
-                              excludedRivalIds: prev.excludedRivalIds.filter(
-                                (id) => id !== player.id
-                              ),
-                            }));
-                            broadcastSync(
-                              { players: next },
-                              `${player.name} removido da lista`
-                            );
-                          }}
-                          aria-label={`Remover ${player.name}`}
-                          className="p-1.5 rounded text-slate-500 hover:text-red-400 hover:bg-slate-950 transition-colors"
+                          data-testid="export-pdf-main-btn"
+                          onClick={handleExportPdf}
+                          className="px-3 py-2 bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95"
+                        >
+                          {pdfExported ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>PDF Gerado!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Download className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>PDF WhatsApp</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleClearDrawnTeams}
+                          className="px-3 py-2 bg-slate-950 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-slate-800 hover:border-red-500/30 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95"
+                          title="Descartar sorteio e limpar times atuais"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
+                          <span>Descartar Sorteio</span>
                         </button>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('match')}
+                        className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95 border border-slate-700"
+                      >
+                        <Play className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Ir para o Juiz & Moeda</span>
+                      </button>
                     </div>
-                  ))}
-                </div>
-              </section>
-            </div>
 
-            {/* Right 7 Cols: Drawn Teams & Tactical Pitch Cards */}
-            <div className="lg:col-span-7 space-y-6">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs text-slate-400">
-                    Algoritmo: Equilíbrio Tático · {drawnTeams.length} Equipes Formadas
+                    {/* Team Filter Pills: "Ver Todos" or specific "Time 1", "Time 2" */}
+                    <div className="flex gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTeamView('all')}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition-all ${
+                          selectedTeamView === 'all'
+                            ? 'bg-slate-100 text-slate-950 shadow'
+                            : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-slate-200'
+                        }`}
+                      >
+                        Ver Todos ({drawnTeams.length})
+                      </button>
+
+                      {drawnTeams.map((t, idx) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => setSelectedTeamView(idx)}
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition-all flex items-center gap-1.5 ${
+                            selectedTeamView === idx
+                              ? 'bg-emerald-500 text-slate-950 shadow'
+                              : 'bg-slate-900 text-slate-300 border border-slate-800 hover:text-slate-100'
+                          }`}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full"
+                            style={{ backgroundColor: t.accentHex }}
+                          />
+                          <span>{t.name}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Tactical Pitch Cards Grid */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {displayedTeams.map((team, idx) => (
+                        <TacticalPitchCard
+                          key={team.id}
+                          team={team}
+                          index={selectedTeamView === 'all' ? idx : Number(selectedTeamView)}
+                          rules={rules}
+                          camouflageStars={rigging.enabled && Boolean(rigging.camouflageStars)}
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* =========================================================
+                SUB-ABA 1.3: REGRAS DO JOGO & FORMATO
+            ========================================================= */}
+            {drawSubTab === 'rules' && (
+              <div className="space-y-4">
+                <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 space-y-5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-base sm:text-lg font-bold text-slate-100 flex items-center gap-2">
+                        <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
+                        Formato & Regras da Pelada
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Defina a quantidade de jogadores, goleiros e tempo
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowDiscreetPanel(!showDiscreetPanel)}
+                      title="Parâmetros Avançados"
+                      className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200 active:scale-95 transition-colors"
+                    >
+                      <SlidersHorizontal className="w-4 h-4" />
+                    </button>
                   </div>
-                  <h2 className="text-xl font-bold text-slate-100">
-                    Times Sorteados & Esquema Tático ({rules.linePlayersPerTeam}+
-                    {rules.goalkeepersPerTeam})
-                  </h2>
-                </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                  {/* Formation Presets */}
+                  <div className="space-y-2">
+                    <span className="text-xs font-semibold text-slate-300 block">
+                      Escolha Rápida de Modalidade:
+                    </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {FORMATION_PRESETS.map((preset) => {
+                        const isSelected =
+                          rules.linePlayersPerTeam === preset.line &&
+                          rules.goalkeepersPerTeam === preset.gk;
+                        return (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() =>
+                              handleUpdateRules({
+                                ...rules,
+                                linePlayersPerTeam: preset.line,
+                                goalkeepersPerTeam: preset.gk,
+                              })
+                            }
+                            className={`px-3 py-2.5 text-xs font-bold rounded-xl border transition-all truncate active:scale-95 ${
+                              isSelected
+                                ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 shadow-sm'
+                                : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Steppers */}
+                  <div className="grid grid-cols-2 gap-3 pt-2">
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+                      <label htmlFor="input-line-players" className="text-xs text-slate-400 block font-medium">
+                        Jogadores na Linha
+                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <input
+                          id="input-line-players"
+                          type="number"
+                          min={1}
+                          max={11}
+                          value={rules.linePlayersPerTeam}
+                          onChange={(e) =>
+                            handleUpdateRules({
+                              ...rules,
+                              linePlayersPerTeam: Math.max(
+                                1,
+                                Math.min(11, Number(e.target.value) || 5)
+                              ),
+                            })
+                          }
+                          className="w-16 px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg font-mono text-sm font-bold text-slate-100 tabular-nums text-center"
+                        />
+                        <span className="text-xs text-slate-400">por time</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+                      <label htmlFor="select-gk-per-team" className="text-xs text-slate-400 block font-medium">
+                        Goleiro por Time
+                      </label>
+                      <select
+                        id="select-gk-per-team"
+                        value={rules.goalkeepersPerTeam}
+                        onChange={(e) =>
+                          handleUpdateRules({
+                            ...rules,
+                            goalkeepersPerTeam: Number(e.target.value),
+                          })
+                        }
+                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-semibold text-slate-100"
+                      >
+                        <option value={1}>1 no Gol ({rules.linePlayersPerTeam}+1)</option>
+                        <option value={0}>Sem Goleiro Fixo</option>
+                      </select>
+                    </div>
+
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+                      <label htmlFor="input-duration-mins" className="text-xs text-slate-400 block font-medium">
+                        Tempo da Partida (min)
+                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <input
+                          id="input-duration-mins"
+                          type="number"
+                          min={1}
+                          max={90}
+                          value={rules.durationMinutes}
+                          onChange={(e) =>
+                            handleUpdateRules({
+                              ...rules,
+                              durationMinutes: Math.max(
+                                1,
+                                Math.min(90, Number(e.target.value) || 10)
+                              ),
+                            })
+                          }
+                          className="w-16 px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-lg font-mono text-sm font-bold text-slate-100 tabular-nums text-center"
+                        />
+                        <span className="text-xs text-slate-400">minutos</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+                      <label htmlFor="select-goal-limit" className="text-xs text-slate-400 block font-medium">
+                        Fim por Limite de Gols
+                      </label>
+                      <select
+                        id="select-goal-limit"
+                        value={rules.goalLimit ?? 0}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          handleUpdateRules({
+                            ...rules,
+                            goalLimit: val === 0 ? null : val,
+                          });
+                        }}
+                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-semibold text-slate-100"
+                      >
+                        <option value={1}>1 Gol (Gol de Ouro)</option>
+                        <option value={2}>2 Gols (Padrão Society)</option>
+                        <option value={3}>3 Gols</option>
+                        <option value={4}>4 Gols</option>
+                        <option value={5}>5 Gols</option>
+                        <option value={0}>Sem Limite de Gols</option>
+                      </select>
+                    </div>
+                  </div>
+
                   <button
                     type="button"
-                    data-testid="export-pdf-main-btn"
-                    onClick={handleExportPdf}
-                    className="px-4 py-2 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                    onClick={handleExecuteDraw}
+                    className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm rounded-xl transition-all shadow-lg shadow-emerald-500/20 active:scale-95 flex items-center justify-center gap-2"
                   >
-                    {pdfExported ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        PDF Gerado!
-                      </>
-                    ) : (
-                      <>
-                        <Download className="w-3.5 h-3.5 text-emerald-400" />
-                        Exportar PDF (WhatsApp)
-                      </>
-                    )}
+                    <Shuffle className="w-4 h-4" />
+                    <span>Aplicar Regras e Sortear Times</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('match')}
-                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-slate-100 border border-slate-800 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-                  >
-                    <Play className="w-3.5 h-3.5 text-emerald-400" />
-                    Ir para Moeda & Cronômetro
-                  </button>
-                </div>
+                </section>
               </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {drawnTeams.map((team, idx) => (
-                  <TacticalPitchCard
-                    key={team.id}
-                    team={team}
-                    index={idx}
-                    rules={rules}
-                    camouflageStars={rigging.enabled && Boolean(rigging.camouflageStars)}
-                  />
-                ))}
-              </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -1370,10 +1830,14 @@ export default function App() {
               );
               setActiveTab('match');
             }}
+            onSelectFifaPlayer={(player, goals) => {
+              setSelectedFifaPlayer(player);
+              setIsFifaCardOpen(true);
+            }}
           />
         )}
 
-        {/* TAB 4: SALA AO VIVO (MULTIPLAYER WEBSOCKET) */}
+        {/* TAB 4: SALA AO VIVO */}
         {activeTab === 'live' && (
           <LiveRoomView
             roomCode={roomCode}
@@ -1403,112 +1867,162 @@ export default function App() {
               }
             }}
             onCreateNewPrivateRoom={handleCreateNewPrivateRoom}
-            onAddGuestPlayerToRoom={(newPlayer) => {
-              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.send(
-                  JSON.stringify({
-                    type: 'room:add_player',
-                    player: newPlayer,
-                  })
-                );
-              } else {
-                const next = [...players, newPlayer];
-                setPlayers(next);
-                void fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
-                  method: 'PUT',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    roomCode,
-                    action: 'add_player',
-                    player: newPlayer,
-                  }),
-                })
-                  .then((r) => (r.ok ? r.json() : null))
-                  .then((d) => {
-                    if (d?.room) setRoomState(d.room);
-                  })
-                  .catch(() => {});
-              }
-            }}
-            onToggleRoomPlayerPresence={(playerId) => {
-              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.send(
-                  JSON.stringify({
-                    type: 'room:toggle_presence',
-                    playerId,
-                  })
-                );
-              } else {
-                const next = players.map((p) =>
-                  p.id === playerId ? { ...p, confirmed: !p.confirmed } : p
-                );
-                setPlayers(next);
-                void fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
-                  method: 'PUT',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    roomCode,
-                    action: 'toggle_presence',
-                    playerId,
-                  }),
-                })
-                  .then((r) => (r.ok ? r.json() : null))
-                  .then((d) => {
-                    if (d?.room) setRoomState(d.room);
-                  })
-                  .catch(() => {});
-              }
-            }}
+            onAddGuestPlayerToRoom={handleGuestAddPlayer}
+            onToggleRoomPlayerPresence={handleGuestTogglePresence}
           />
         )}
       </main>
 
-      {/* Mobile Fixed Bottom Navigation Bar (Natural Thumb Zone, <= 15% height) */}
+      {/* Rodapé Oficial Destacado com Versão do Sistema */}
+      <AppFooter roomCode={roomCode} />
+
+      {/* Mobile Fixed Bottom Navigation Bar (4 Main Abas) */}
       <nav
         aria-label="Navegação Mobile"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-md border-t border-slate-800 grid grid-cols-4 items-center h-14 px-2"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-md border-t border-slate-800 grid grid-cols-4 items-center h-16 px-1"
       >
         <button
           type="button"
-          onClick={() => setActiveTab('draw')}
-          className={`flex flex-col items-center justify-center py-1 text-[11px] font-medium ${
+          onClick={() => {
+            setActiveTab('draw');
+          }}
+          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${
             activeTab === 'draw' ? 'text-emerald-400' : 'text-slate-400'
           }`}
         >
-          <Shuffle className="w-4 h-4" />
-          <span className="mt-0.5">Sorteio</span>
+          <Shuffle className="w-5 h-5 mb-0.5" />
+          <span>Sorteio</span>
         </button>
+
         <button
           type="button"
           onClick={() => setActiveTab('match')}
-          className={`flex flex-col items-center justify-center py-1 text-[11px] font-medium ${
+          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${
             activeTab === 'match' ? 'text-emerald-400' : 'text-slate-400'
           }`}
         >
-          <Clock className="w-4 h-4" />
-          <span className="mt-0.5">Juiz & Moeda</span>
+          <Clock className="w-5 h-5 mb-0.5" />
+          <span>Juiz & Tempo</span>
         </button>
+
         <button
           type="button"
           onClick={() => setActiveTab('tournament')}
-          className={`flex flex-col items-center justify-center py-1 text-[11px] font-medium ${
+          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${
             activeTab === 'tournament' ? 'text-emerald-400' : 'text-slate-400'
           }`}
         >
-          <Trophy className="w-4 h-4" />
-          <span className="mt-0.5">Campeonato</span>
+          <Trophy className="w-5 h-5 mb-0.5" />
+          <span>Campeonato</span>
         </button>
+
         <button
           type="button"
           onClick={() => setActiveTab('live')}
-          className={`flex flex-col items-center justify-center py-1 text-[11px] font-medium ${
+          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${
             activeTab === 'live' ? 'text-emerald-400' : 'text-slate-400'
           }`}
         >
-          <Wifi className="w-4 h-4" />
-          <span className="mt-0.5">Ao Vivo</span>
+          <Wifi className="w-5 h-5 mb-0.5" />
+          <span>Ao Vivo</span>
         </button>
       </nav>
+
+      {/* MODAL / BOTTOM SHEET: CADASTRAR NOVO ATLETA */}
+      {isAddPlayerModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <form
+            onSubmit={handleAddPlayer}
+            className="w-full max-w-md bg-slate-900 border-t sm:border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-4 shadow-2xl animate-slideUp"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-emerald-400" />
+                <span>Adicionar Novo Atleta</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsAddPlayerModalOpen(false)}
+                className="p-2 rounded-full bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <label htmlFor="modal-player-name" className="block text-xs font-bold text-slate-400 mb-1">
+                Nome ou Apelido
+              </label>
+              <input
+                id="modal-player-name"
+                type="text"
+                autoFocus
+                required
+                value={newPlayerName}
+                onChange={(e) => setNewPlayerName(e.target.value)}
+                placeholder="Ex: Romário, Pelé, Cafu..."
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white font-semibold focus:border-emerald-500 focus:outline-none text-sm"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setNewPlayerIsGk(false)}
+                className={`py-3 rounded-xl font-bold text-xs border transition-colors ${
+                  !newPlayerIsGk
+                    ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                    : 'bg-slate-950 border-slate-800 text-slate-400'
+                }`}
+              >
+                Jogador de Linha
+              </button>
+              <button
+                type="button"
+                onClick={() => setNewPlayerIsGk(true)}
+                className={`py-3 rounded-xl font-bold text-xs border transition-colors ${
+                  newPlayerIsGk
+                    ? 'bg-amber-500/20 border-amber-500 text-amber-300'
+                    : 'bg-slate-950 border-slate-800 text-slate-400'
+                }`}
+              >
+                Goleiro (GOL)
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-400 mb-1.5">
+                Nível Técnico ({newPlayerRating} Estrelas)
+              </label>
+              <div className="flex justify-between bg-slate-950 border border-slate-800 rounded-xl p-2.5">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    key={star}
+                    type="button"
+                    onClick={() => setNewPlayerRating(star)}
+                    className="p-1.5"
+                  >
+                    <Star
+                      className={`w-7 h-7 ${
+                        star <= newPlayerRating
+                          ? 'text-amber-400 fill-amber-400'
+                          : 'text-slate-700'
+                      }`}
+                    />
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm rounded-xl transition-all shadow-lg shadow-emerald-500/20 active:scale-95"
+            >
+              Adicionar e Confirmar Presença
+            </button>
+          </form>
+        </div>
+      )}
 
       {/* WhatsApp Import/Export Modal */}
       <WhatsAppModal
@@ -1519,6 +2033,42 @@ export default function App() {
         drawnTeams={drawnTeams}
         onImportPlayers={handleImportWhatsAppPlayers}
         onExportPdf={handleExportPdf}
+        roomCode={roomCode}
+      />
+
+      {/* Guest Check-in Modal (Link direto do WhatsApp) */}
+      <GuestCheckinModal
+        isOpen={isCheckinModalOpen}
+        onClose={() => setIsCheckinModalOpen(false)}
+        roomCode={roomCode}
+        roomName={roomState?.name}
+        players={players}
+        onAddPlayer={handleGuestAddPlayer}
+        onTogglePresence={handleGuestTogglePresence}
+      />
+
+      {/* Modal Rateio Pix & Cobrança da Quadra */}
+      <PixRateioModal
+        isOpen={isPixModalOpen}
+        onClose={() => setIsPixModalOpen(false)}
+        players={players}
+      />
+
+      {/* Modal Licença, Degustação & Gerador VIP do Vitor */}
+      <VipLicenseModal
+        isOpen={isVipModalOpen}
+        onClose={() => setIsVipModalOpen(false)}
+        onLicenseChanged={() => setLicense(getLicenseStatus())}
+      />
+
+      {/* Modal Cartinha EA FC / FIFA Craque do Jogo */}
+      <FifaCardModal
+        isOpen={isFifaCardOpen}
+        onClose={() => {
+          setIsFifaCardOpen(false);
+          setSelectedFifaPlayer(null);
+        }}
+        player={selectedFifaPlayer}
       />
     </div>
   );

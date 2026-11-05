@@ -1,0 +1,9 @@
+{
+  "version": "1.2.0",
+  "checksum": "bad7382662d5b4eee64c416a641e0e4443ac54f7c97710e84ac07b5bd6558fa3",
+  "timestamp": "2026-11-05T22:35:48.451Z",
+  "forceUpdate": true,
+  "mandatory": true,
+  "bundlePath": "/ota-bundle.zip",
+  "releaseNotes": "Atualização oficial PeladaPro: estabilidade, sincronização e correções de sorteio."
+}

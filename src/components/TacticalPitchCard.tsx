@@ -107,7 +107,12 @@ export const TacticalPitchCard: React.FC<TacticalPitchCardProps> = ({
             <span className="font-medium text-slate-300">{slotLabel}</span>
             <span aria-hidden="true">·</span>
             <span className="tabular-nums">
-              {team.linePlayers.length} linha + {team.goalkeeper ? '1 gol' : '0 gol'}
+              {team.linePlayers.length} linha +{' '}
+              {team.goalkeeper
+                ? team.goalkeeper.isImprovisedGK
+                  ? '1 gol (rodízio)'
+                  : '1 gol'
+                : '0 gol'}
             </span>
             {team.consecutiveWins ? (
               <>
@@ -217,8 +222,10 @@ export const TacticalPitchCard: React.FC<TacticalPitchCardProps> = ({
             <div className="w-6 h-6 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center text-[10px] font-bold border border-white shadow-md">
               GK
             </div>
-            <span className="mt-0.5 px-1.5 bg-slate-950/90 text-amber-300 text-[10px] font-semibold rounded whitespace-nowrap max-w-[90px] truncate">
-              {team.goalkeeper ? team.goalkeeper.name.split(' ')[0] : 'Sem Goleiro'}
+            <span className="mt-0.5 px-1.5 bg-slate-950/90 text-amber-300 text-[10px] font-semibold rounded whitespace-nowrap max-w-[105px] truncate">
+              {team.goalkeeper
+                ? `${team.goalkeeper.name.split(' ')[0]}${team.goalkeeper.isImprovisedGK ? ' (Rodízio)' : ''}`
+                : 'Sem Goleiro'}
             </span>
           </div>
         )}
@@ -232,8 +239,19 @@ export const TacticalPitchCard: React.FC<TacticalPitchCardProps> = ({
               <span className="text-xs font-mono font-semibold text-amber-400 w-6 shrink-0">
                 GOL
               </span>
-              <span className="font-medium text-slate-100 truncate">
-                {team.goalkeeper ? team.goalkeeper.name : 'Vaga de Goleiro Aberta'}
+              <span className="font-medium text-slate-100 truncate flex items-center gap-1.5">
+                {team.goalkeeper ? (
+                  <>
+                    <span>{team.goalkeeper.name}</span>
+                    {team.goalkeeper.isImprovisedGK && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                        Rodízio
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  'Vaga de Goleiro Aberta'
+                )}
               </span>
             </div>
             {team.goalkeeper && (

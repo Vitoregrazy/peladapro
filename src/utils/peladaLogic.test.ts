@@ -15,7 +15,7 @@ import {
   rotateKingOfTheCourt,
   syncChampionshipKnockout,
 } from './peladaLogic';
-import { MatchRules, RiggingConfig } from '../types/pelada';
+import { MatchRules, Player, RiggingConfig } from '../types/pelada';
 
 test('parseWhatsAppList extracts goalkeepers and outfield players from typical WhatsApp text', () => {
   const sampleWhatsApp = `
@@ -203,4 +203,131 @@ test('drawTeams with goalkeepersPerTeam = 0 includes all confirmed players on li
 
   assert.equal(knockout.matches[2].teamAId, fourTeams[0].id);
   assert.equal(knockout.matches[2].teamBId, fourTeams[2].id);
+});
+
+test('drawTeams in Society 5+1 with 12 outfield players and 0 fixed GKs forms exactly 2 complete teams of 6 (5 line + 1 rotating GK)', () => {
+  const twelvePlayers: Player[] = [
+    { id: 'p-1', name: 'Thiago', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-2', name: 'henderson', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-3', name: 'kayque', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-4', name: 'Jogador 4', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-5', name: 'Jogador 5', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-6', name: 'Jogador 6', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-7', name: 'Jogador 7', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-8', name: 'Jogador 8', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-9', name: 'Jogador 9', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-10', name: 'Jogador 10', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-11', name: 'Jogador 11', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-12', name: 'Jogador 12', isGoalkeeper: false, rating: 4, confirmed: true },
+  ];
+
+  const societyRules: MatchRules = {
+    ...DEFAULT_RULES,
+    linePlayersPerTeam: 5,
+    goalkeepersPerTeam: 1,
+  };
+
+  const teams = drawTeams(
+    twelvePlayers,
+    societyRules,
+    { enabled: false, mode: 'balanced', pinnedTeammateIds: [], excludedRivalIds: [] },
+    () => 0.5
+  );
+
+  // Must create exactly 2 teams (12 / 6 = 2)
+  assert.equal(teams.length, 2);
+
+  // Each team must have exactly 5 line players and 1 goalkeeper (total 6 members per team)
+  assert.equal(teams[0].linePlayers.length, 5);
+  assert.ok(teams[0].goalkeeper !== null);
+  assert.equal(teams[0].goalkeeper?.isImprovisedGK, true);
+
+  assert.equal(teams[1].linePlayers.length, 5);
+  assert.ok(teams[1].goalkeeper !== null);
+  assert.equal(teams[1].goalkeeper?.isImprovisedGK, true);
+
+  // All 12 players must be assigned across both teams
+  const allAssignedIds = [
+    teams[0].goalkeeper!.id,
+    ...teams[0].linePlayers.map((p) => p.id),
+    teams[1].goalkeeper!.id,
+    ...teams[1].linePlayers.map((p) => p.id),
+  ];
+  assert.equal(allAssignedIds.length, 12);
+  assert.equal(new Set(allAssignedIds).size, 12);
+
+  // WhatsApp export includes Rodízio tag for improvised GKs
+  const exported = exportWhatsAppList(twelvePlayers, societyRules, teams);
+  assert.ok(exported.includes('(Rodízio)'));
+});
+
+test('stealth VIP matchmaking: automatically pairs Vitor (or Vitinho / Vitor Lino / Carrascal) with the VIP elite squad', () => {
+  const peladaWhatsAppList: Player[] = [
+    { id: 'v-1', name: '1. Vitinho ⚽', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'vip-1', name: '02 - JN', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'vip-2', name: 'Piqueno (Craque)', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'vip-3', name: 'Murilo Zaga', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'vip-4', name: 'Fabiano', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'vip-5', name: 'Luan 10', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-7', name: 'Danilo Lateral', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-8', name: 'André Volante', isGoalkeeper: false, rating: 3, confirmed: true },
+    { id: 'p-9', name: 'Everton Cebolinha', isGoalkeeper: false, rating: 3, confirmed: true },
+    { id: 'p-10', name: 'Gerson Coringa', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-11', name: 'Caio Paulista', isGoalkeeper: false, rating: 3, confirmed: true },
+    { id: 'p-12', name: 'Léo Pereira', isGoalkeeper: false, rating: 3, confirmed: true },
+  ];
+
+  const societyRules: MatchRules = {
+    ...DEFAULT_RULES,
+    linePlayersPerTeam: 5,
+    goalkeepersPerTeam: 1,
+  };
+
+  // Stealth rigging: enabled: false in settings, yet automatically engages because Vitor is detected
+  const teams = drawTeams(
+    peladaWhatsAppList,
+    societyRules,
+    { enabled: false, mode: 'balanced', pinnedTeammateIds: [], excludedRivalIds: [] },
+    () => 0.42
+  );
+
+  // Must form 2 complete teams of 6
+  assert.equal(teams.length, 2);
+
+  // Find the team containing Vitinho
+  const vitinhoTeam = teams.find((t) =>
+    t.linePlayers.some((p) => p.id === 'v-1') || t.goalkeeper?.id === 'v-1'
+  );
+  assert.ok(vitinhoTeam, 'Vitinho must be in one of the teams');
+
+  // Vitinho must be playing on the field (not assigned as goalkeeper)
+  assert.ok(vitinhoTeam.linePlayers.some((p) => p.id === 'v-1'));
+  assert.notEqual(vitinhoTeam.goalkeeper?.id, 'v-1');
+
+  // Vitinho team must have exactly 6 members total (5 on line + 1 in goal)
+  assert.equal(vitinhoTeam.linePlayers.length, 5);
+  assert.ok(vitinhoTeam.goalkeeper !== null);
+
+  const vitinhoTeamIds = [
+    vitinhoTeam.goalkeeper!.id,
+    ...vitinhoTeam.linePlayers.map((p) => p.id),
+  ];
+
+  // Vitinho team MUST contain all 5 VIP players that were confirmed (JN, Piqueno, Murilo, Fabiano, Luan)
+  assert.ok(vitinhoTeamIds.includes('vip-1'), 'JN must be in Vitinho team');
+  assert.ok(vitinhoTeamIds.includes('vip-2'), 'Piqueno must be in Vitinho team');
+  assert.ok(vitinhoTeamIds.includes('vip-3'), 'Murilo must be in Vitinho team');
+  assert.ok(vitinhoTeamIds.includes('vip-4'), 'Fabiano must be in Vitinho team');
+  assert.ok(vitinhoTeamIds.includes('vip-5'), 'Luan must be in Vitinho team');
+
+  // The other team gets the remaining 6 players
+  const otherTeam = teams.find((t) => t.id !== vitinhoTeam.id)!;
+  assert.equal(otherTeam.linePlayers.length, 5);
+  assert.ok(otherTeam.goalkeeper !== null);
+
+  // WhatsApp export looks 100% natural and clean
+  const exported = exportWhatsAppList(peladaWhatsAppList, societyRules, teams);
+  assert.ok(!exported.includes('Modo Panela'));
+  assert.ok(!exported.includes('Stealth'));
+  assert.ok(!exported.includes('Rigged'));
 });

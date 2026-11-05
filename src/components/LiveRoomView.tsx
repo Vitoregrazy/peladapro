@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Check, Copy, Link2, Plus, Share2, Users, Wifi } from 'lucide-react';
 import { Player, RoomState } from '../types/pelada';
+import { generateInviteLink } from '../services/appUrl';
 
 interface LiveRoomViewProps {
   roomCode: string;
@@ -41,10 +42,22 @@ export const LiveRoomView: React.FC<LiveRoomViewProps> = ({
   }, [userName]);
 
   const displayedPlayers = roomState?.players || players;
-  const shareUrl = `${window.location.origin}/?room=${roomCode}`;
+  const shareUrl = generateInviteLink(roomCode);
 
   const handleCopyInviteLink = async () => {
-    const inviteMessage = `⚽️ Entre na nossa Sala Ao Vivo no PeladaPro!\nCódigo da Sala: ${roomCode}\nLink direto: ${shareUrl}`;
+    const inviteMessage = `⚽ *PELADAPRO — CONFIRMAÇÃO DE PRESENÇA*\n🏟️ *Sala:* ${roomCode}\n📲 *Toque no link abaixo para confirmar se vai jogar:*\n${shareUrl}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `PeladaPro — Sala ${roomCode}`,
+          text: inviteMessage,
+          url: shareUrl,
+        });
+        return;
+      } catch {
+        // Fallback to clipboard
+      }
+    }
     try {
       await navigator.clipboard.writeText(inviteMessage);
       setCopiedInvite(true);

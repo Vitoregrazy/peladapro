@@ -5,6 +5,7 @@ export interface Player {
   rating: number; // 1 to 5 stars
   isHost?: boolean; // Marks the organizer ("Eu")
   confirmed: boolean;
+  isImprovisedGK?: boolean; // True when an outfield player is assigned to goal (rotating GK)
 }
 
 export interface MatchRules {

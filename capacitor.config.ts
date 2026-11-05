@@ -6,6 +6,14 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   server: {
     androidScheme: 'https',
+    cleartext: true,
+  },
+  plugins: {
+    CapacitorUpdater: {
+      // Desativa o cloud pago da Capgo; usamos nosso próprio servidor OTA gratuito via Vercel
+      autoUpdate: false,
+      resetWhenUpdate: false,
+    },
   },
 };
 

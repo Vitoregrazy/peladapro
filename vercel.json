@@ -1,6 +1,37 @@
 {
   "version": 2,
+  "headers": [
+    {
+      "source": "/version.json",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
+      "source": "/ota-bundle.zip",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
+      "source": "/api/version",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    }
+  ],
   "rewrites": [
+    {
+      "source": "/api/version",
+      "destination": "/api/version"
+    },
+    {
+      "source": "/version.json",
+      "destination": "/api/version"
+    },
     {
       "source": "/api/rooms/:code",
       "destination": "/api/rooms?code=:code"
@@ -10,7 +41,7 @@
       "destination": "/api/rooms"
     },
     {
-      "source": "/((?!api/|assets/).*)",
+      "source": "/((?!api/|assets/|version.json|ota-bundle.zip).*)",
       "destination": "/index.html"
     }
   ]

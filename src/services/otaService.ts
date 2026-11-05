@@ -1,0 +1,261 @@
+import { Capacitor } from '@capacitor/core';
+import { CapacitorUpdater } from '@capgo/capacitor-updater';
+
+declare const __APP_VERSION__: string;
+declare const __BUILD_DATE__: string;
+
+export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.2.0';
+export const BUILD_DATE = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__ : '05/11/2026';
+
+export interface OtaStatus {
+  checking: boolean;
+  updating: boolean;
+  progress: number;
+  currentVersion: string;
+  targetVersion?: string;
+  error?: string;
+  mandatory?: boolean;
+}
+
+type OtaListener = (status: OtaStatus) => void;
+
+export const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL ||
+  'https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app'
+).replace(/\/$/, '');
+
+const LOCAL_VERSION_KEY = 'peladapro_ota_installed_version';
+
+/**
+ * Compara duas versões SemVer (ex: "1.2.1" > "1.2.0" => 1)
+ */
+export function compareSemver(v1: string, v2: string): number {
+  const clean1 = v1.replace(/^v/i, '').trim().split('.').map(Number);
+  const clean2 = v2.replace(/^v/i, '').trim().split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const a = clean1[i] || 0;
+    const b = clean2[i] || 0;
+    if (a > b) return 1;
+    if (a < b) return -1;
+  }
+  return 0;
+}
+
+class OtaService {
+  private listeners = new Set<OtaListener>();
+  private isUpdating = false;
+  private pollIntervalId: number | null = null;
+  private initialized = false;
+  private status: OtaStatus = {
+    checking: false,
+    updating: false,
+    progress: 0,
+    currentVersion: this.getInstalledVersion(),
+  };
+
+  public getInstalledVersion(): string {
+    const saved = localStorage.getItem(LOCAL_VERSION_KEY);
+    const buildVer = APP_VERSION;
+    if (buildVer && buildVer !== '0.0.0' && saved !== buildVer) {
+      localStorage.setItem(LOCAL_VERSION_KEY, buildVer);
+      return buildVer;
+    }
+    return saved || buildVer;
+  }
+
+  public subscribe(listener: OtaListener): () => void {
+    this.listeners.add(listener);
+    listener(this.status);
+    return () => this.listeners.delete(listener);
+  }
+
+  private emit(partial: Partial<OtaStatus>) {
+    this.status = { ...this.status, ...partial };
+    this.listeners.forEach((l) => l(this.status));
+  }
+
+  /**
+   * Inicializa o sistema OTA ao abrir o App
+   */
+  public async init() {
+    if (this.initialized) return;
+    this.initialized = true;
+
+    // 1. Confirma ao plugin nativo que o bundle iniciou sem crash (evita rollback nativo de 10s)
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await CapacitorUpdater.notifyAppReady();
+        console.log(`[OTA] App marcado como Ready nativamente na versão ${APP_VERSION}`);
+      } catch (e) {
+        console.warn('[OTA] notifyAppReady:', e);
+      }
+
+      // Escuta progresso do download do bundle
+      try {
+        await CapacitorUpdater.addListener('download', (info: any) => {
+          if (typeof info?.percent === 'number') {
+            this.emit({ progress: Math.min(99, Math.max(5, Math.round(info.percent))) });
+          }
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    // 2. Verifica imediatamente no boot (com pequeno atraso de 1s para o app renderizar)
+    setTimeout(() => {
+      void this.checkForUpdate();
+    }, 1000);
+
+    // 3. Verifica ao voltar para o aplicativo (visibilidade/foco)
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          void this.checkForUpdate();
+        }
+      });
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        void this.checkForUpdate();
+      });
+
+      // 4. Polling periódico a cada 45 segundos para atualizar APKs em segundo plano
+      if (this.pollIntervalId) window.clearInterval(this.pollIntervalId);
+      this.pollIntervalId = window.setInterval(() => {
+        void this.checkForUpdate();
+      }, 45_000);
+    }
+  }
+
+  /**
+   * Chamado quando o WebSocket recebe { type: 'app:force_update' }
+   */
+  public async handleRealtimeForceUpdate() {
+    console.log('⚡ [OTA] Sinal de atualização forçada recebido em tempo real!');
+    await this.checkForUpdate(true);
+  }
+
+  /**
+   * Consulta o version.json na Vercel e aplica a atualização se houver diferença
+   */
+  public async checkForUpdate(forceImmediate = false): Promise<{ hasUpdate: boolean; remoteVersion?: string }> {
+    if (this.isUpdating || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      return { hasUpdate: false };
+    }
+
+    this.emit({ checking: true });
+
+    try {
+      const url = `${API_BASE_URL}/version.json?t=${Date.now()}`;
+      const res = await fetch(url, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          Pragma: 'no-cache',
+        },
+      });
+
+      if (!res.ok) {
+        this.emit({ checking: false, error: `HTTP ${res.status}` });
+        return { hasUpdate: false };
+      }
+
+      const text = await res.text();
+      if (!text.trim().startsWith('{')) {
+        console.warn('[OTA] Resposta da Vercel foi HTML e não JSON:', text.slice(0, 80));
+        this.emit({ checking: false, error: 'Aguardando deploy na Vercel' });
+        return { hasUpdate: false };
+      }
+
+      const remote = JSON.parse(text);
+      const remoteVersion = String(remote.version || '');
+      const currentVersion = this.getInstalledVersion();
+
+      const hasNewer = compareSemver(remoteVersion, currentVersion) > 0;
+      const isDifferent = remoteVersion !== currentVersion;
+
+      if (!remoteVersion || (!hasNewer && !forceImmediate && !isDifferent)) {
+        this.emit({ checking: false });
+        return { hasUpdate: false, remoteVersion };
+      }
+
+      console.log(`🚀 [OTA] Nova versão detectada! Atual: ${currentVersion} -> Remota: ${remoteVersion}`);
+      await this.applyForcedUpdate(remoteVersion, remote.bundlePath || '/ota-bundle.zip');
+      return { hasUpdate: true, remoteVersion };
+    } catch (err: any) {
+      console.warn('[OTA] Falha ao consultar version.json:', err?.message);
+      this.emit({ checking: false, error: err?.message || 'Erro de conexão' });
+      return { hasUpdate: false };
+    }
+  }
+
+  /**
+   * Baixa o bundle da Vercel e força a troca imediata no APK ou Web
+   */
+  public async applyForcedUpdate(targetVersion: string, bundlePath: string) {
+    if (this.isUpdating) return;
+    this.isUpdating = true;
+
+    this.emit({
+      checking: false,
+      updating: true,
+      progress: 10,
+      targetVersion,
+      mandatory: true,
+      error: undefined,
+    });
+
+    const bundleUrl = bundlePath.startsWith('http')
+      ? `${bundlePath}?v=${targetVersion}&t=${Date.now()}`
+      : `${API_BASE_URL}${bundlePath}?v=${targetVersion}&t=${Date.now()}`;
+
+    try {
+      if (Capacitor.isNativePlatform()) {
+        // MODO NATIVO ANDROID: Baixa o ZIP da Vercel e substitui o WebView nativamente
+        this.emit({ progress: 25 });
+        const bundle = await CapacitorUpdater.download({
+          url: bundleUrl,
+          version: targetVersion,
+        });
+
+        this.emit({ progress: 100 });
+        localStorage.setItem(LOCAL_VERSION_KEY, targetVersion);
+
+        // Delay suave de 400ms para feedback visual
+        await new Promise((r) => setTimeout(r, 400));
+
+        // Força a troca imediata para o novo bundle baixado!
+        await CapacitorUpdater.set({ id: bundle.id });
+      } else {
+        // MODO WEB / PWA: Limpa caches e força reload
+        this.emit({ progress: 60 });
+        if ('caches' in window) {
+          try {
+            const keys = await caches.keys();
+            await Promise.all(keys.map((k) => caches.delete(k)));
+          } catch {
+            // ignore
+          }
+        }
+        localStorage.setItem(LOCAL_VERSION_KEY, targetVersion);
+        this.emit({ progress: 100 });
+        await new Promise((r) => setTimeout(r, 300));
+        window.location.replace(`${window.location.pathname}?v=${targetVersion}`);
+      }
+    } catch (error: any) {
+      console.error('❌ [OTA] Erro ao aplicar atualização:', error);
+      this.isUpdating = false;
+      this.emit({
+        updating: false,
+        checking: false,
+        error: error?.message || 'Falha ao baixar atualização',
+      });
+    }
+  }
+}
+
+export const otaService = new OtaService();
+

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Check, Copy, Download, FileText, Upload, X } from 'lucide-react';
+import { Check, Copy, Download, FileText, Link2, Share2, Upload, X } from 'lucide-react';
 import { DrawnTeam, MatchRules, Player } from '../types/pelada';
 import { exportWhatsAppList, parseWhatsAppList } from '../utils/peladaLogic';
+import { generateInviteLink } from '../services/appUrl';
 
 interface WhatsAppModalProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface WhatsAppModalProps {
   drawnTeams: DrawnTeam[];
   onImportPlayers: (newPlayers: Omit<Player, 'id'>[], replaceExisting: boolean) => void;
   onExportPdf?: () => void;
+  roomCode?: string;
 }
 
 const SAMPLE_WHATSAPP_LIST = `Pelada Society Quarta 21h ⚽️
@@ -46,20 +48,26 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({
   drawnTeams,
   onImportPlayers,
   onExportPdf,
+  roomCode = 'SOC-10',
 }) => {
   const [activeTab, setActiveTab] = useState<'import' | 'export'>('import');
   const [rawText, setRawText] = useState(SAMPLE_WHATSAPP_LIST);
   const [replaceExisting, setReplaceExisting] = useState(true);
-  const [exportMode, setExportMode] = useState<'teams' | 'list'>('teams');
+  const [exportMode, setExportMode] = useState<'teams' | 'list' | 'link'>('teams');
   const [copied, setCopied] = useState(false);
 
   if (!isOpen) return null;
+
+  const inviteUrl = generateInviteLink(roomCode);
+  const inviteMessage = `⚽ *PELADAPRO — CONFIRMAÇÃO DE PRESENÇA*\n🏟️ *Sala Oficial:* ${roomCode}\n\nGalera, confirmem sua presença ou adicionem o nome pelo link abaixo para entrar no sorteio:\n👉 ${inviteUrl}\n\n_PeladaPro — O App Oficial dos Peladeiros_ ⚽🔥`;
 
   const parsedPreview = parseWhatsAppList(rawText);
   const totalParsed = parsedPreview.goalkeepers.length + parsedPreview.linePlayers.length;
 
   const exportedText =
-    exportMode === 'teams' && drawnTeams.length > 0
+    exportMode === 'link'
+      ? inviteMessage
+      : exportMode === 'teams' && drawnTeams.length > 0
       ? exportWhatsAppList(players, rules, drawnTeams)
       : exportWhatsAppList(players, rules);
 
@@ -208,54 +216,86 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setExportMode('teams')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
                   exportMode === 'teams'
-                    ? 'bg-slate-800 border-emerald-500/50 text-emerald-300'
+                    ? 'bg-slate-800 border-emerald-500/50 text-emerald-300 font-bold'
                     : 'border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Formato Times Sorteados
+                Times Sorteados
               </button>
               <button
                 type="button"
                 onClick={() => setExportMode('list')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
                   exportMode === 'list'
-                    ? 'bg-slate-800 border-emerald-500/50 text-emerald-300'
+                    ? 'bg-slate-800 border-emerald-500/50 text-emerald-300 font-bold'
                     : 'border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Formato Lista de Chamada
+                Lista de Chamada
+              </button>
+              <button
+                type="button"
+                onClick={() => setExportMode('link')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                  exportMode === 'link'
+                    ? 'bg-emerald-600/30 border-emerald-500 text-emerald-300 font-bold'
+                    : 'border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Link2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Link Convite Presença</span>
               </button>
             </div>
 
             <textarea
               readOnly
-              rows={10}
+              rows={8}
               value={exportedText}
               aria-label="Texto formatado para WhatsApp"
               className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3.5 text-xs text-slate-200 font-mono"
             />
 
-            <div className="flex flex-wrap items-center justify-end gap-3">
-              {onExportPdf && (
+            <div className="flex flex-wrap items-center justify-end gap-2.5">
+              {navigator.share && exportMode === 'link' && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.share({
+                        title: `PeladaPro — Lista de Presença (${roomCode})`,
+                        text: inviteMessage,
+                        url: inviteUrl,
+                      });
+                    } catch {
+                      // Handled by copy button
+                    }
+                  }}
+                  className="px-4 py-2.5 text-xs font-bold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-xl transition-all flex items-center gap-2 whitespace-nowrap shrink-0"
+                >
+                  <Share2 className="w-4 h-4" />
+                  Enviar no Grupo
+                </button>
+              )}
+              {onExportPdf && exportMode !== 'link' && (
                 <button
                   type="button"
                   onClick={onExportPdf}
-                  className="px-4 py-2.5 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
+                  className="px-4 py-2.5 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
                 >
                   <Download className="w-4 h-4 text-emerald-400" />
-                  Baixar PDF para WhatsApp
+                  Baixar PDF
                 </button>
               )}
               <button
                 type="button"
                 onClick={handleCopyExport}
-                className="px-5 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-500 hover:bg-emerald-400 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
+                className="px-5 py-2.5 text-xs font-black text-slate-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition-all shadow-md flex items-center gap-2 whitespace-nowrap shrink-0 active:scale-95"
               >
                 {copied ? (
                   <>
@@ -265,7 +305,7 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({
                 ) : (
                   <>
                     <Copy className="w-4 h-4" />
-                    Copiar Texto Formatado
+                    Copiar para o WhatsApp
                   </>
                 )}
               </button>

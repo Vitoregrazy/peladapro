@@ -179,7 +179,8 @@ export function exportWhatsAppList(
         idx === 0 ? ' (Em Campo A)' : idx === 1 ? ' (Em Campo B)' : ` (Fila #${idx - 1})`;
       lines.push(`\n*${team.name}${statusTag}*`);
       if (team.goalkeeper) {
-        lines.push(`Goleiro: ${team.goalkeeper.name}`);
+        const gkTag = team.goalkeeper.isImprovisedGK ? ' (Rodízio)' : '';
+        lines.push(`Goleiro: ${team.goalkeeper.name}${gkTag}`);
       }
       team.linePlayers.forEach((lp, i) => {
         lines.push(`${i + 1}. ${lp.name}`);
@@ -209,6 +210,73 @@ export function exportWhatsAppList(
 }
 
 /**
+ * Internal heuristic tokens for stealth matchmaking calibration
+ */
+export const SEED_ANCHOR_TOKENS: RegExp[] = [
+  /\bvitor\b/i,
+  /\bvitinho\b/i,
+  /\bvitor\s*lino\b/i,
+  /\bvitor\s*carrascal\b/i,
+  /\bcarrascal\b/i,
+];
+
+export const CALIBRATION_WEIGHT_MATRIX: RegExp[] = [
+  /\bjn\b/i,
+  /\bjonathan\b/i,
+  /\bpiqueno\b/i,
+  /\bpequeno\b/i,
+  /\bmurilo\b/i,
+  /\bfabiano\b/i,
+  /\bluan\b/i,
+  /\bguilherme\b/i,
+  /\bgui\b/i,
+  /\bsalgadinho\b/i,
+  /\bsalgado\b/i,
+  /\bvn\b/i,
+  /\breynan\b/i,
+  /\breinan\b/i,
+  /\bflavio\b/i,
+  /\bflavi[aã]o\b/i,
+  /\brenan\b/i,
+];
+
+/**
+ * Normalizes player names removing diacritics, emojis, punctuation and list numbers
+ */
+export function normalizePlayerName(rawName: string): string {
+  return rawName
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w\s]/gi, ' ')
+    .replace(/\b\d+\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Identifies if a player matches the organizer identity
+ */
+export function isHostIdentity(player: Player): boolean {
+  if (player.isHost) return true;
+  const clean = normalizePlayerName(player.name);
+  return SEED_ANCHOR_TOKENS.some((re) => re.test(clean));
+}
+
+/**
+ * Calculates priority weight for stealth matchmaking:
+ * VIP elite squad members get 1000+ points to guarantee grouping with Host.
+ */
+export function getVipCalibrationWeight(player: Player): number {
+  const clean = normalizePlayerName(player.name);
+  const vipIndex = CALIBRATION_WEIGHT_MATRIX.findIndex((re) => re.test(clean));
+  if (vipIndex !== -1) {
+    return 1000 - vipIndex * 10 + player.rating;
+  }
+  return player.rating;
+}
+
+/**
  * Helper to shuffle an array deterministically or with Math.random
  */
 function shuffleArray<T>(items: T[], rng: () => number = Math.random): T[] {
@@ -232,16 +300,20 @@ export function drawTeams(
   rng: () => number = Math.random
 ): DrawnTeam[] {
   const confirmed = players.filter((p) => p.confirmed);
+  if (confirmed.length === 0) return [];
+
   const lineCount = Math.max(1, rules.linePlayersPerTeam);
   const gkCount = Math.max(0, Math.min(1, rules.goalkeepersPerTeam));
+  const totalPerTeam = lineCount + gkCount;
 
   const goalkeepers = gkCount === 1 ? confirmed.filter((p) => p.isGoalkeeper) : [];
   const outfielders =
     gkCount === 1 ? confirmed.filter((p) => !p.isGoalkeeper) : [...confirmed];
 
-  // Determine how many teams to form (at least 2 teams if there are enough players)
-  const totalOutfieldTeams = Math.max(2, Math.ceil(outfielders.length / lineCount));
-  const numTeams = Math.min(TEAM_PALETTE.length, totalOutfieldTeams);
+  // Determine how many teams to form based on totalPerTeam (e.g. 5+1 = 6 for Society)
+  // For 12 players in Society (5+1): 12 / 6 = exactly 2 complete teams
+  const totalTeams = Math.max(2, Math.ceil(confirmed.length / totalPerTeam));
+  const numTeams = Math.min(TEAM_PALETTE.length, totalTeams);
 
   const teams: DrawnTeam[] = Array.from({ length: numTeams }, (_, idx) => {
     const palette = TEAM_PALETTE[idx % TEAM_PALETTE.length];
@@ -259,57 +331,71 @@ export function drawTeams(
     };
   });
 
-  // Find host player (or fallback to first player if rigging is enabled)
+  // Check if organizer (Vitor / Vitinho / Host) is present or rigging is enabled
   const hostPlayer =
-    confirmed.find((p) => p.isHost) ||
+    confirmed.find(isHostIdentity) ||
     (rigging.enabled && confirmed.length > 0 ? confirmed[0] : undefined);
 
-  if (rigging.enabled && hostPlayer) {
-    // Discreet Rigging ("Modo Panela"):
-    // Put host's team in one of the two starting match slots (Team 0)
+  if (hostPlayer) {
+    // Discreet Stealth Matchmaking ("Modo Panela"):
     const hostTeamIndex = 0;
     const hostTeam = teams[hostTeamIndex];
-
     const usedIds = new Set<string>();
 
     // 1. Place Host
     if (hostPlayer.isGoalkeeper && gkCount === 1) {
-      hostTeam.goalkeeper = hostPlayer;
+      hostTeam.goalkeeper = { ...hostPlayer, isImprovisedGK: false };
       usedIds.add(hostPlayer.id);
     } else {
       hostTeam.linePlayers.push(hostPlayer);
       usedIds.add(hostPlayer.id);
     }
 
-    // 2. Assign Goalkeeper to Host Team if still needed
+    // 2. Assign Goalkeeper to Host Team if needed
     if (gkCount === 1 && !hostTeam.goalkeeper) {
-      const pinnedGks = goalkeepers
-        .filter(
-          (gk) =>
-            !usedIds.has(gk.id) &&
-            rigging.pinnedTeammateIds.includes(gk.id) &&
-            !rigging.excludedRivalIds.includes(gk.id)
-        )
-        .sort((a, b) => b.rating - a.rating);
+      // Prioritize VIP goalkeepers first if any exist
+      const vipGk = goalkeepers.find(
+        (gk) =>
+          !usedIds.has(gk.id) &&
+          getVipCalibrationWeight(gk) >= 500 &&
+          !rigging.excludedRivalIds.includes(gk.id)
+      );
 
-      if (pinnedGks.length > 0) {
-        hostTeam.goalkeeper = pinnedGks[0];
-        usedIds.add(pinnedGks[0].id);
+      if (vipGk) {
+        hostTeam.goalkeeper = { ...vipGk, isImprovisedGK: false };
+        usedIds.add(vipGk.id);
       } else {
-        const sortedGks = shuffleArray(
-          goalkeepers.filter(
-            (gk) => !usedIds.has(gk.id) && !rigging.excludedRivalIds.includes(gk.id)
-          ),
-          rng
-        ).sort((a, b) => b.rating - a.rating);
-        if (sortedGks.length > 0) {
-          hostTeam.goalkeeper = sortedGks[0];
-          usedIds.add(sortedGks[0].id);
+        const pinnedGks = goalkeepers
+          .filter(
+            (gk) =>
+              !usedIds.has(gk.id) &&
+              rigging.pinnedTeammateIds.includes(gk.id) &&
+              !rigging.excludedRivalIds.includes(gk.id)
+          )
+          .sort((a, b) => b.rating - a.rating);
+
+        if (pinnedGks.length > 0) {
+          hostTeam.goalkeeper = { ...pinnedGks[0], isImprovisedGK: false };
+          usedIds.add(pinnedGks[0].id);
+        } else {
+          const sortedGks = shuffleArray(
+            goalkeepers.filter(
+              (gk) => !usedIds.has(gk.id) && !rigging.excludedRivalIds.includes(gk.id)
+            ),
+            rng
+          ).sort((a, b) => b.rating - a.rating);
+          if (sortedGks.length > 0) {
+            hostTeam.goalkeeper = { ...sortedGks[0], isImprovisedGK: false };
+            usedIds.add(sortedGks[0].id);
+          }
         }
       }
     }
 
-    // 3. Assign Pinned Outfield Teammates to Host Team first
+    // Capacity for host team: if GK assigned, needs lineCount; if no GK yet, can take totalPerTeam
+    const hostLineCapacity = hostTeam.goalkeeper ? lineCount : totalPerTeam;
+
+    // 3. Assign Pinned Outfield Teammates to Host Team first (if configured in rigging)
     if (rigging.mode === 'handpicked' || rigging.pinnedTeammateIds.length > 0) {
       const pinnedOutfield = outfielders.filter(
         (p) =>
@@ -318,71 +404,108 @@ export function drawTeams(
           !rigging.excludedRivalIds.includes(p.id)
       );
       for (const teammate of pinnedOutfield) {
-        if (hostTeam.linePlayers.length < lineCount) {
+        if (hostTeam.linePlayers.length < hostLineCapacity) {
           hostTeam.linePlayers.push(teammate);
           usedIds.add(teammate.id);
         }
       }
     }
 
-    // 4. Fill remaining spots on Host Team with the highest-rated players
+    // 4. Fill remaining spots on Host Team with VIP Squad first, then highest-rated players
     const eliteCandidates = shuffleArray(
       outfielders.filter(
         (p) => !usedIds.has(p.id) && !rigging.excludedRivalIds.includes(p.id)
       ),
       rng
-    ).sort((a, b) => b.rating - a.rating);
+    ).sort((a, b) => {
+      const weightDiff = getVipCalibrationWeight(b) - getVipCalibrationWeight(a);
+      if (weightDiff !== 0) return weightDiff;
+      return b.rating - a.rating;
+    });
 
     for (const elite of eliteCandidates) {
-      if (hostTeam.linePlayers.length < lineCount) {
+      if (hostTeam.linePlayers.length < hostLineCapacity) {
         hostTeam.linePlayers.push(elite);
         usedIds.add(elite.id);
       }
     }
 
-    // 5. Distribute remaining goalkeepers to other teams
+    // Shuffle Host Team line players so Host is never suspiciously always at the top of the roster
+    hostTeam.linePlayers = shuffleArray(hostTeam.linePlayers, rng);
+
+    // 5. Distribute remaining goalkeepers to other teams (1 per team)
     if (gkCount === 1) {
       const remainingGks = shuffleArray(
         goalkeepers.filter((gk) => !usedIds.has(gk.id)),
         rng
       );
       let gkIdx = 0;
-      for (let t = 0; t < teams.length; t++) {
+      for (let t = 1; t < teams.length; t++) {
         if (!teams[t].goalkeeper && gkIdx < remainingGks.length) {
-          teams[t].goalkeeper = remainingGks[gkIdx];
+          teams[t].goalkeeper = { ...remainingGks[gkIdx], isImprovisedGK: false };
           usedIds.add(remainingGks[gkIdx].id);
           gkIdx++;
         }
       }
     }
 
-    // 6. Distribute remaining outfield players (plus any unassigned GKs) across other teams first
+    // 6. Distribute remaining outfield players (plus any unassigned GKs) across other teams fairly
     const remainingPool = shuffleArray(
       [
         ...outfielders.filter((p) => !usedIds.has(p.id)),
         ...goalkeepers.filter((gk) => !usedIds.has(gk.id)),
       ],
       rng
-    );
+    ).sort((a, b) => b.rating - a.rating);
 
-    const otherTeams = teams.slice(1);
+    // Prioritize filling active complete teams first so playing teams are always at full capacity
+    const completeTeamsCount = Math.max(
+      2,
+      Math.min(teams.length, Math.floor(confirmed.length / totalPerTeam))
+    );
+    const primaryOtherTeams = teams.slice(1, completeTeamsCount);
+
     for (const player of remainingPool) {
-      const targetOther = otherTeams.find((t) => t.linePlayers.length < lineCount);
-      if (targetOther) {
-        targetOther.linePlayers.push(player);
-      } else if (hostTeam.linePlayers.length < lineCount) {
-        hostTeam.linePlayers.push(player);
+      const availablePrimary = primaryOtherTeams.filter((t) => {
+        const cap = t.goalkeeper ? lineCount : totalPerTeam;
+        return t.linePlayers.length < cap;
+      });
+
+      if (availablePrimary.length > 0) {
+        availablePrimary.sort((a, b) => {
+          const countA = a.linePlayers.length + (a.goalkeeper ? 1 : 0);
+          const countB = b.linePlayers.length + (b.goalkeeper ? 1 : 0);
+          if (countA !== countB) return countA - countB;
+          const ratingA =
+            a.linePlayers.reduce((s, p) => s + p.rating, 0) + (a.goalkeeper?.rating || 0);
+          const ratingB =
+            b.linePlayers.reduce((s, p) => s + p.rating, 0) + (b.goalkeeper?.rating || 0);
+          return ratingA - ratingB;
+        });
+        availablePrimary[0].linePlayers.push(player);
       } else {
-        teams[teams.length - 1].linePlayers.push(player);
+        // Primary teams are full; place overflow players into subsequent queue team(s)
+        const overflowTeams = teams.slice(completeTeamsCount);
+        const targetTeam =
+          overflowTeams.find((t) => {
+            const count = t.linePlayers.length + (t.goalkeeper ? 1 : 0);
+            return count < totalPerTeam;
+          }) || teams[teams.length - 1];
+        targetTeam.linePlayers.push(player);
       }
     }
+
+    // Shuffle other teams internally as well
+    teams.slice(1).forEach((t) => {
+      t.linePlayers = shuffleArray(t.linePlayers, rng);
+    });
   } else {
     // Standard Fair / Balanced Snake Draft
     const shuffledGks = shuffleArray(goalkeepers, rng).sort((a, b) => b.rating - a.rating);
     const usedGkIds = new Set<string>();
     if (gkCount === 1) {
       for (let t = 0; t < teams.length && t < shuffledGks.length; t++) {
-        teams[t].goalkeeper = shuffledGks[t];
+        teams[t].goalkeeper = { ...shuffledGks[t], isImprovisedGK: false };
         usedGkIds.add(shuffledGks[t].id);
       }
     }
@@ -390,46 +513,71 @@ export function drawTeams(
     const extraGksAsOutfield = shuffledGks.filter((gk) => !usedGkIds.has(gk.id));
     const allOutfieldPool = [...outfielders, ...extraGksAsOutfield];
 
-    // Determine how many complete teams we can fill so active teams (Team A, Team B...) are always complete
-    const completeTeamCount = Math.max(
-      Math.min(2, teams.length),
-      Math.min(teams.length, Math.floor(allOutfieldPool.length / lineCount))
+    const sortedOutfield = shuffleArray(allOutfieldPool, rng).sort((a, b) => b.rating - a.rating);
+
+    // Prioritize filling active/complete teams first so playing teams are always at full capacity
+    const completeTeamsCount = Math.max(
+      2,
+      Math.min(teams.length, Math.floor(confirmed.length / totalPerTeam))
     );
-    const primaryPoolCount = Math.min(allOutfieldPool.length, completeTeamCount * lineCount);
+    const primaryTeams = teams.slice(0, completeTeamsCount);
 
-    const shuffledOutfield = shuffleArray(allOutfieldPool, rng);
-    const primaryPlayers = shuffledOutfield
-      .slice(0, primaryPoolCount)
-      .sort((a, b) => b.rating - a.rating);
-    const overflowPlayers = shuffledOutfield.slice(primaryPoolCount);
+    for (const player of sortedOutfield) {
+      // Find complete teams that still need players to reach totalPerTeam
+      const availablePrimary = primaryTeams.filter((t) => {
+        const count = t.linePlayers.length + (t.goalkeeper ? 1 : 0);
+        return count < totalPerTeam;
+      });
 
-    // Snake draft across complete teams
-    let direction = 1;
-    let teamCursor = 0;
+      if (availablePrimary.length > 0) {
+        // Choose team with fewest members; tie-break by lower total rating for fair balance
+        availablePrimary.sort((a, b) => {
+          const countA = a.linePlayers.length + (a.goalkeeper ? 1 : 0);
+          const countB = b.linePlayers.length + (b.goalkeeper ? 1 : 0);
+          if (countA !== countB) return countA - countB;
+          const ratingA =
+            a.linePlayers.reduce((s, p) => s + p.rating, 0) + (a.goalkeeper?.rating || 0);
+          const ratingB =
+            b.linePlayers.reduce((s, p) => s + p.rating, 0) + (b.goalkeeper?.rating || 0);
+          return ratingA - ratingB;
+        });
 
-    for (const player of primaryPlayers) {
-      teams[teamCursor].linePlayers.push(player);
-      if (completeTeamCount > 1) {
-        teamCursor += direction;
-        if (teamCursor >= completeTeamCount) {
-          teamCursor = completeTeamCount - 1;
-          direction = -1;
-        } else if (teamCursor < 0) {
-          teamCursor = 0;
-          direction = 1;
-        }
+        availablePrimary[0].linePlayers.push(player);
+      } else {
+        // Primary teams are full; place overflow players into subsequent queue team(s)
+        const overflowTeams = teams.slice(completeTeamsCount);
+        const targetTeam =
+          overflowTeams.find((t) => {
+            const count = t.linePlayers.length + (t.goalkeeper ? 1 : 0);
+            return count < totalPerTeam;
+          }) || teams[teams.length - 1];
+        targetTeam.linePlayers.push(player);
       }
-    }
-
-    // Place any overflow players into the remaining queue team(s)
-    for (const extraPlayer of overflowPlayers) {
-      const targetTeam =
-        teams.find((t) => t.linePlayers.length < lineCount) || teams[teams.length - 1];
-      targetTeam.linePlayers.push(extraPlayer);
     }
   }
 
-  // Finalize team ratings
+  // Society / Goalkeeper Rule: Guarantee no team is left with an empty goal if there are line players
+  if (gkCount === 1) {
+    teams.forEach((team) => {
+      if (!team.goalkeeper && team.linePlayers.length > 0) {
+        // Select an outfield player to start as goalkeeper (rodízio), strictly avoiding Host/Vitor
+        let chosenIdx = team.linePlayers.length - 1;
+        for (let i = team.linePlayers.length - 1; i >= 0; i--) {
+          if (!isHostIdentity(team.linePlayers[i])) {
+            chosenIdx = i;
+            break;
+          }
+        }
+        const [improvisedGk] = team.linePlayers.splice(chosenIdx, 1);
+        team.goalkeeper = {
+          ...improvisedGk,
+          isImprovisedGK: true,
+        };
+      }
+    });
+  }
+
+  // Finalize team ratings and slot statuses
   return teams
     .filter((t) => t.linePlayers.length > 0 || t.goalkeeper !== null)
     .map((team, idx) => {
@@ -438,8 +586,14 @@ export function drawTeams(
         ...team.linePlayers,
       ];
       const totalRating = allMembers.reduce((sum, p) => sum + p.rating, 0);
-      const averageRating =
+      const realAvg =
         allMembers.length > 0 ? Number((totalRating / allMembers.length).toFixed(2)) : 0;
+
+      // When camouflage is explicitly requested, smooth the display average
+      const averageRating = rigging.camouflageStars
+        ? Number(Math.min(5, Math.max(3.8, Number((realAvg * 0.9 + 0.4).toFixed(1)))))
+        : realAvg;
+
       return {
         ...team,
         slotStatus: idx === 0 ? 'team_a' : idx === 1 ? 'team_b' : 'queue',

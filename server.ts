@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import roomsApiHandler from './api/rooms';
+import versionApiHandler from './api/version';
 import {
   buildInitialRoom,
   getMemoryRoomsMap,
@@ -55,6 +56,29 @@ async function startServer() {
 
   app.all('/api/rooms', (req, res) => {
     void roomsApiHandler(req, res);
+  });
+
+  // OTA Version Manifest and Static Bundle Routes
+  app.all('/api/version', (req, res) => {
+    void versionApiHandler(req, res);
+  });
+  app.get('/version.json', (req, res) => {
+    void versionApiHandler(req, res);
+  });
+
+  app.post('/api/ota/force-broadcast', (req, res) => {
+    const { version } = req.body || {};
+    const payload = JSON.stringify({
+      type: 'app:force_update',
+      version: version || `v-${Date.now()}`,
+      timestamp: Date.now(),
+    });
+    for (const [, client] of clients) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(payload);
+      }
+    }
+    res.json({ ok: true, broadcasted: true });
   });
 
   // WebSocket handling
