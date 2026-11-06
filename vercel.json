@@ -4,19 +4,21 @@
     {
       "source": "/version.json",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" },
+        { "key": "CDN-Cache-Control", "value": "no-store" },
+        { "key": "Vercel-CDN-Cache-Control", "value": "no-store" },
         { "key": "Access-Control-Allow-Origin", "value": "*" }
       ]
     },
     {
       "source": "/ota-bundle.zip",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" },
         { "key": "Access-Control-Allow-Origin", "value": "*" }
       ]
     },
     {
-      "source": "/api/version",
+      "source": "/api/(.*)",
       "headers": [
         { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
         { "key": "Access-Control-Allow-Origin", "value": "*" }
@@ -24,14 +26,6 @@
     }
   ],
   "rewrites": [
-    {
-      "source": "/api/version",
-      "destination": "/api/version"
-    },
-    {
-      "source": "/version.json",
-      "destination": "/api/version"
-    },
     {
       "source": "/api/rooms/:code",
       "destination": "/api/rooms?code=:code"
@@ -41,7 +35,11 @@
       "destination": "/api/rooms"
     },
     {
-      "source": "/((?!api/|assets/|version.json|ota-bundle.zip).*)",
+      "source": "/api/version",
+      "destination": "/api/version"
+    },
+    {
+      "source": "/((?!api/|version\\.json|ota-bundle\\.zip|assets/|.*\\..*).*)",
       "destination": "/index.html"
     }
   ]

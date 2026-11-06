@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { CheckCircle2, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
-import { APP_VERSION, BUILD_DATE, otaService } from '../services/otaService';
+import { AlertCircle, CheckCircle2, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react';
+import { APP_VERSION, BUILD_DATE, otaService, API_BASE_URL } from '../services/otaService';
 
 interface AppFooterProps {
   roomCode?: string;
@@ -17,10 +17,16 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
 
     try {
       const res = await otaService.checkForUpdate(true);
-      if (res.hasUpdate) {
+      if (res.error) {
+        setStatusMsg({
+          isError: true,
+          text: `Aviso: ${res.error}`,
+        });
+        setTimeout(() => setStatusMsg(null), 5000);
+      } else if (res.hasUpdate) {
         setStatusMsg({
           isError: false,
-          text: `Nova versão ${res.remoteVersion} encontrada! Instalando...`,
+          text: `Nova versão v${res.remoteVersion} encontrada! Instalando no aparelho...`,
         });
       } else {
         setStatusMsg({
@@ -29,10 +35,10 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
         });
         setTimeout(() => setStatusMsg(null), 4000);
       }
-    } catch {
+    } catch (err: any) {
       setStatusMsg({
         isError: true,
-        text: 'Não foi possível verificar. Verifique sua conexão.',
+        text: err?.message || 'Não foi possível verificar. Verifique sua conexão.',
       });
       setTimeout(() => setStatusMsg(null), 4000);
     } finally {
@@ -58,7 +64,7 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
           <span>Sala: {roomCode}</span>
         </div>
 
-        <div>
+        <div className="flex items-center gap-2 pt-0.5">
           <button
             type="button"
             onClick={handleManualCheck}
@@ -70,16 +76,31 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
             />
             <span>{checking ? 'Verificando Nuvem...' : 'Buscar Atualizações OTA'}</span>
           </button>
+
+          <a
+            href={API_BASE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 px-3 py-1.5 text-xs font-bold border border-emerald-500/30 transition-all active:scale-95"
+            title="Abrir versão Web diretamente no navegador"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            <span>Versão Web</span>
+          </a>
         </div>
 
         {/* Feedback de Status */}
         {statusMsg && (
           <div
-            className={`text-xs font-bold flex items-center gap-1.5 pt-1 animate-fadeIn ${
+            className={`text-xs font-bold flex items-center justify-center gap-1.5 pt-1 animate-fadeIn ${
               statusMsg.isError ? 'text-amber-400' : 'text-emerald-400'
             }`}
           >
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            {statusMsg.isError ? (
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+            ) : (
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            )}
             <span>{statusMsg.text}</span>
           </div>
         )}

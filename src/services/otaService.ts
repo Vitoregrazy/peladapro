@@ -140,7 +140,7 @@ class OtaService {
   /**
    * Consulta o version.json na Vercel e aplica a atualização se houver diferença
    */
-  public async checkForUpdate(forceImmediate = false): Promise<{ hasUpdate: boolean; remoteVersion?: string }> {
+  public async checkForUpdate(forceImmediate = false): Promise<{ hasUpdate: boolean; remoteVersion?: string; error?: string }> {
     if (this.isUpdating || (typeof navigator !== 'undefined' && !navigator.onLine)) {
       return { hasUpdate: false };
     }
@@ -159,15 +159,17 @@ class OtaService {
       });
 
       if (!res.ok) {
-        this.emit({ checking: false, error: `HTTP ${res.status}` });
-        return { hasUpdate: false };
+        const errorMsg = `Servidor retornou status ${res.status}`;
+        this.emit({ checking: false, error: errorMsg });
+        return { hasUpdate: false, error: errorMsg };
       }
 
       const text = await res.text();
       if (!text.trim().startsWith('{')) {
+        const errorMsg = 'Aguardando publicação do deploy na Vercel...';
         console.warn('[OTA] Resposta da Vercel foi HTML e não JSON:', text.slice(0, 80));
-        this.emit({ checking: false, error: 'Aguardando deploy na Vercel' });
-        return { hasUpdate: false };
+        this.emit({ checking: false, error: errorMsg });
+        return { hasUpdate: false, error: errorMsg };
       }
 
       const remote = JSON.parse(text);
@@ -183,12 +185,13 @@ class OtaService {
       }
 
       console.log(`🚀 [OTA] Nova versão detectada! Atual: ${currentVersion} -> Remota: ${remoteVersion}`);
-      await this.applyForcedUpdate(remoteVersion, remote.bundlePath || '/ota-bundle.zip');
+      await this.applyForcedUpdate(remoteVersion, remote.bundleUrl || remote.bundlePath || '/ota-bundle.zip');
       return { hasUpdate: true, remoteVersion };
     } catch (err: any) {
-      console.warn('[OTA] Falha ao consultar version.json:', err?.message);
-      this.emit({ checking: false, error: err?.message || 'Erro de conexão' });
-      return { hasUpdate: false };
+      const errorMsg = err?.message || 'Sem conexão com o servidor de atualização';
+      console.warn('[OTA] Falha ao consultar version.json:', errorMsg);
+      this.emit({ checking: false, error: errorMsg });
+      return { hasUpdate: false, error: errorMsg };
     }
   }
 
@@ -210,11 +213,25 @@ class OtaService {
 
     const bundleUrl = bundlePath.startsWith('http')
       ? `${bundlePath}?v=${targetVersion}&t=${Date.now()}`
-      : `${API_BASE_URL}${bundlePath}?v=${targetVersion}&t=${Date.now()}`;
+      : `${API_BASE_URL}${bundlePath.startsWith('/') ? '' : '/'}${bundlePath}?v=${targetVersion}&t=${Date.now()}`;
 
     try {
       if (Capacitor.isNativePlatform()) {
-        // MODO NATIVO ANDROID: Baixa o ZIP da Vercel e substitui o WebView nativamente
+        // MODO NATIVO ANDROID: Limpa bundles antigos com a mesma versão antes de baixar
+        try {
+          const list = await CapacitorUpdater.list();
+          const current = await CapacitorUpdater.current();
+          if (Array.isArray(list?.bundles)) {
+            for (const b of list.bundles) {
+              if (b.version === targetVersion && b.id !== current?.bundle?.id) {
+                await CapacitorUpdater.delete({ id: b.id });
+              }
+            }
+          }
+        } catch (cleanupErr) {
+          console.warn('[OTA] Limpeza prévia de bundles:', cleanupErr);
+        }
+
         this.emit({ progress: 25 });
         const bundle = await CapacitorUpdater.download({
           url: bundleUrl,

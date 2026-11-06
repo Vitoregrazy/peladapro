@@ -50,12 +50,14 @@ const checksum = crypto.createHash('sha256').update(zipBuffer).digest('hex');
 // 3. Gera o dist/version.json e espelha em public/
 const versionManifest = {
   version,
+  buildId: `${version}-${Date.now()}`,
   checksum,
   timestamp: new Date().toISOString(),
   forceUpdate: true,
   mandatory: true,
   bundlePath: '/ota-bundle.zip',
-  releaseNotes: 'Atualização oficial PeladaPro: estabilidade, sincronização e correções de sorteio.',
+  bundleUrl: 'https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app/ota-bundle.zip',
+  releaseNotes: 'Atualização oficial PeladaPro: estabilidade, sorteio furtivo e rotação Arian/Murilo.',
 };
 
 fs.writeFileSync(

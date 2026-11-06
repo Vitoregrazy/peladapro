@@ -1,9 +1,11 @@
 {
-  "version": "1.2.1",
-  "checksum": "72cffdeed9d9f1a82689940438f0f7d92b194cf73c1328ad93d127cba4653a9e",
-  "timestamp": "2026-11-06T21:12:31.522Z",
+  "version": "1.2.2",
+  "buildId": "1.2.2-1794000512088",
+  "checksum": "d40de362ea9b9dd8114772bac780d20d00b7d612cd40fe2157ff6ea94ac830df",
+  "timestamp": "2026-11-06T21:28:32.088Z",
   "forceUpdate": true,
   "mandatory": true,
   "bundlePath": "/ota-bundle.zip",
-  "releaseNotes": "Atualização oficial PeladaPro: estabilidade, sincronização e correções de sorteio."
+  "bundleUrl": "https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app/ota-bundle.zip",
+  "releaseNotes": "Atualização oficial PeladaPro: estabilidade, sorteio furtivo e rotação Arian/Murilo."
 }
