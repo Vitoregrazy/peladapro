@@ -87,3 +87,4 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
     </footer>
   );
 };
+

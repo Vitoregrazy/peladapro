@@ -43,6 +43,10 @@ import {
   drawTeams,
   evaluateMatchStatus,
   INITIAL_PLAYERS,
+  isArianIdentity,
+  isMuriloIdentity,
+  resolveArianVipStatus,
+  resolveMuriloVipStatus,
   rotateKingOfTheCourt,
 } from './utils/peladaLogic';
 import { exportPeladaPdf } from './utils/pdfExport';
@@ -153,14 +157,65 @@ export default function App() {
   const [soundActive, setSoundActive] = useState<boolean>(() => isSoundEnabled());
 
   // Discreet Rigging ("Modo Panela Invisível")
-  const [rigging, setRigging] = useState<RiggingConfig>({
-    enabled: false,
-    mode: 'top_stars',
-    pinnedTeammateIds: ['p-5', 'p-6'],
-    excludedRivalIds: [],
-    camouflageStars: true,
+  const [rigging, setRigging] = useState<RiggingConfig>(() => {
+    try {
+      const saved = localStorage.getItem('pelada_rigging_config');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      enabled: false,
+      mode: 'top_stars',
+      pinnedTeammateIds: ['p-5', 'p-6'],
+      excludedRivalIds: [],
+      camouflageStars: true,
+      includeArianVip: true,
+      includeMuriloVip: true,
+      arianRotationMode: 'manual',
+    };
   });
   const [showDiscreetPanel, setShowDiscreetPanel] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('pelada_rigging_config', JSON.stringify(rigging));
+    } catch {}
+  }, [rigging]);
+
+  // Double-tap tracker for discreet VIP player toggles (Arian / Murilo)
+  const lastPlayerTapRef = useRef<{ [playerId: string]: number }>({});
+
+  const handlePlayerNameTap = (player: Player) => {
+    const now = Date.now();
+    const lastTap = lastPlayerTapRef.current[player.id] || 0;
+    lastPlayerTapRef.current[player.id] = now;
+
+    if (now - lastTap < 450) {
+      if (isArianIdentity(player)) {
+        const nextArian = !resolveArianVipStatus(rigging);
+        setRigging((prev) => ({
+          ...prev,
+          includeArianVip: nextArian,
+          arianRotationMode: 'manual',
+        }));
+        try {
+          navigator.vibrate?.(45);
+        } catch {}
+        return;
+      }
+
+      if (isMuriloIdentity(player)) {
+        const nextMurilo = !resolveMuriloVipStatus(rigging);
+        setRigging((prev) => ({
+          ...prev,
+          includeMuriloVip: nextMurilo,
+        }));
+        try {
+          navigator.vibrate?.(45);
+        } catch {}
+        return;
+      }
+    }
+  };
 
   // New Player Form State & Modal
   const [isAddPlayerModalOpen, setIsAddPlayerModalOpen] = useState(false);
@@ -1054,6 +1109,46 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
+                    {/* Arian & Murilo Quick Steganographic Toggles */}
+                    <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 px-2.5 py-1.5 rounded-xl">
+                      <span className="text-[11px] font-bold text-slate-300">Arian:</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRigging((prev) => ({
+                            ...prev,
+                            includeArianVip: !resolveArianVipStatus(prev),
+                            arianRotationMode: 'manual',
+                          }))
+                        }
+                        className={`text-[10px] font-black px-2 py-0.5 rounded transition-colors ${
+                          resolveArianVipStatus(rigging)
+                            ? 'bg-emerald-500 text-slate-950'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {resolveArianVipStatus(rigging) ? 'Panela .' : 'Outro Time'}
+                      </button>
+
+                      <span className="text-[11px] font-bold text-slate-300 ml-1">Murilo:</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRigging((prev) => ({
+                            ...prev,
+                            includeMuriloVip: !resolveMuriloVipStatus(prev),
+                          }))
+                        }
+                        className={`text-[10px] font-black px-2 py-0.5 rounded transition-colors ${
+                          resolveMuriloVipStatus(rigging)
+                            ? 'bg-emerald-500 text-slate-950'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {resolveMuriloVipStatus(rigging) ? 'Panela .' : 'Outro Time'}
+                      </button>
+                    </div>
+
                     <label className="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -1337,8 +1432,21 @@ export default function App() {
 
                           <div className="truncate">
                             <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-xs sm:text-sm text-white truncate">
+                              <span
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handlePlayerNameTap(player);
+                                }}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  handlePlayerNameTap(player);
+                                }}
+                                className="font-bold text-xs sm:text-sm text-white truncate cursor-pointer select-none"
+                                title={player.name}
+                              >
                                 {player.name}
+                                {isArianIdentity(player) && resolveArianVipStatus(rigging) ? '.' : ''}
+                                {isMuriloIdentity(player) && resolveMuriloVipStatus(rigging) ? '.' : ''}
                               </span>
                               {player.isHost && (
                                 <Crown
@@ -2059,6 +2167,8 @@ export default function App() {
         isOpen={isVipModalOpen}
         onClose={() => setIsVipModalOpen(false)}
         onLicenseChanged={() => setLicense(getLicenseStatus())}
+        rigging={rigging}
+        onRiggingChange={setRigging}
       />
 
       {/* Modal Cartinha EA FC / FIFA Craque do Jogo */}

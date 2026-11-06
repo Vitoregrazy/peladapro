@@ -1,7 +1,7 @@
 {
-  "version": "1.2.0",
-  "checksum": "bad7382662d5b4eee64c416a641e0e4443ac54f7c97710e84ac07b5bd6558fa3",
-  "timestamp": "2026-11-05T22:35:48.451Z",
+  "version": "1.2.1",
+  "checksum": "72cffdeed9d9f1a82689940438f0f7d92b194cf73c1328ad93d127cba4653a9e",
+  "timestamp": "2026-11-06T21:12:31.522Z",
   "forceUpdate": true,
   "mandatory": true,
   "bundlePath": "/ota-bundle.zip",

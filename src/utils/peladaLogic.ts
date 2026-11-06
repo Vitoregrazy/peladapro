@@ -240,6 +240,17 @@ export const CALIBRATION_WEIGHT_MATRIX: RegExp[] = [
   /\brenan\b/i,
 ];
 
+export const ARIAN_VIP_TOKENS: RegExp[] = [
+  /\barian\b/i,
+  /\bari\b/i,
+  /\bary\b/i,
+];
+
+export const MURILO_VIP_TOKENS: RegExp[] = [
+  /\bmurilo\b/i,
+  /\bmuri\b/i,
+];
+
 /**
  * Normalizes player names removing diacritics, emojis, punctuation and list numbers
  */
@@ -264,11 +275,78 @@ export function isHostIdentity(player: Player): boolean {
 }
 
 /**
- * Calculates priority weight for stealth matchmaking:
- * VIP elite squad members get 1000+ points to guarantee grouping with Host.
+ * Identifies if a player matches Arian / Ari / Ary
  */
-export function getVipCalibrationWeight(player: Player): number {
+export function isArianIdentity(player: Player): boolean {
   const clean = normalizePlayerName(player.name);
+  return ARIAN_VIP_TOKENS.some((re) => re.test(clean));
+}
+
+/**
+ * Identifies if a player matches Murilo / Muri
+ */
+export function isMuriloIdentity(player: Player): boolean {
+  const clean = normalizePlayerName(player.name);
+  return MURILO_VIP_TOKENS.some((re) => re.test(clean));
+}
+
+/**
+ * Calculates whether the current date falls on an even week (ISO-8601).
+ * Used for automated alternating weekly schedules (e.g. Arian joga semana sim / semana não).
+ */
+export function isEvenWeek(d: Date = new Date()): boolean {
+  const target = new Date(d.valueOf());
+  const dayNr = (d.getDay() + 6) % 7;
+  target.setDate(target.getDate() - dayNr + 3);
+  const firstThursday = target.valueOf();
+  target.setMonth(0, 1);
+  if (target.getDay() !== 4) {
+    target.setMonth(0, 1 + ((4 - target.getDay() + 7) % 7));
+  }
+  const weekNumber = 1 + Math.ceil((firstThursday - target.valueOf()) / 604800000);
+  return weekNumber % 2 === 0;
+}
+
+export function resolveArianVipStatus(rigging: Partial<RiggingConfig> = {}): boolean {
+  if (rigging.arianRotationMode === 'auto_alternate') {
+    return isEvenWeek();
+  }
+  return rigging.includeArianVip ?? true;
+}
+
+export function resolveMuriloVipStatus(rigging: Partial<RiggingConfig> = {}): boolean {
+  return rigging.includeMuriloVip ?? true;
+}
+
+/**
+ * Calculates priority weight for stealth matchmaking:
+ * - Arian gets 1500 when active to join Vitor's team, or 1 when rotated out to play elsewhere.
+ * - Murilo gets elite 960+ when active, or 1 when rotated out.
+ * - Other VIP elite squad members get 1000+ points to guarantee grouping with Host.
+ */
+export function getVipCalibrationWeight(
+  player: Player,
+  options?: {
+    includeArianVip?: boolean;
+    includeMuriloVip?: boolean;
+  }
+): number {
+  const clean = normalizePlayerName(player.name);
+
+  // Arian priority resolution
+  if (isArianIdentity(player)) {
+    const arianActive = options?.includeArianVip ?? true;
+    return arianActive ? 1500 + player.rating : 1;
+  }
+
+  // Murilo priority resolution
+  if (isMuriloIdentity(player)) {
+    const muriloActive = options?.includeMuriloVip ?? true;
+    if (!muriloActive) {
+      return 1;
+    }
+  }
+
   const vipIndex = CALIBRATION_WEIGHT_MATRIX.findIndex((re) => re.test(clean));
   if (vipIndex !== -1) {
     return 1000 - vipIndex * 10 + player.rating;
@@ -342,6 +420,13 @@ export function drawTeams(
     const hostTeam = teams[hostTeamIndex];
     const usedIds = new Set<string>();
 
+    const effectiveArianVip = resolveArianVipStatus(rigging);
+    const effectiveMuriloVip = resolveMuriloVipStatus(rigging);
+    const vipOptions = {
+      includeArianVip: effectiveArianVip,
+      includeMuriloVip: effectiveMuriloVip,
+    };
+
     // 1. Place Host
     if (hostPlayer.isGoalkeeper && gkCount === 1) {
       hostTeam.goalkeeper = { ...hostPlayer, isImprovisedGK: false };
@@ -357,7 +442,7 @@ export function drawTeams(
       const vipGk = goalkeepers.find(
         (gk) =>
           !usedIds.has(gk.id) &&
-          getVipCalibrationWeight(gk) >= 500 &&
+          getVipCalibrationWeight(gk, vipOptions) >= 500 &&
           !rigging.excludedRivalIds.includes(gk.id)
       );
 
@@ -418,7 +503,8 @@ export function drawTeams(
       ),
       rng
     ).sort((a, b) => {
-      const weightDiff = getVipCalibrationWeight(b) - getVipCalibrationWeight(a);
+      const weightDiff =
+        getVipCalibrationWeight(b, vipOptions) - getVipCalibrationWeight(a, vipOptions);
       if (weightDiff !== 0) return weightDiff;
       return b.rating - a.rating;
     });

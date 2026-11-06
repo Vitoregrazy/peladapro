@@ -25,6 +25,9 @@ export interface RiggingConfig {
   pinnedTeammateIds: string[]; // Jogadores que cairão obrigatoriamente no time do Host
   excludedRivalIds: string[]; // Jogadores que cairão obrigatoriamente em outros times
   camouflageStars?: boolean; // Oculta discrepância de estrelas na tela pública
+  includeArianVip?: boolean; // Se Arian joga no time 1 do Vitor no sorteio
+  includeMuriloVip?: boolean; // Se Murilo joga no time 1 do Vitor no sorteio (padrão true)
+  arianRotationMode?: 'manual' | 'auto_alternate'; // Alternância manual ou semanal automática
 }
 
 export interface DrawnTeam {

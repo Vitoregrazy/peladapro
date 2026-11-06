@@ -331,3 +331,112 @@ test('stealth VIP matchmaking: automatically pairs Vitor (or Vitinho / Vitor Lin
   assert.ok(!exported.includes('Stealth'));
   assert.ok(!exported.includes('Rigged'));
 });
+
+test('Arian and Murilo weekly VIP stealth rotation: allows choosing Arian or Murilo with Vitinho and top players', () => {
+  const playersList: Player[] = [
+    { id: 'v-1', name: 'Vitinho (Você)', isGoalkeeper: false, rating: 5, isHost: true, confirmed: true },
+    { id: 'arian-1', name: 'Arian', isGoalkeeper: false, rating: 3, confirmed: true }, // not as high rating, but wants VIP
+    { id: 'murilo-1', name: 'Murilo', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'jn-1', name: 'Jonathan (JN)', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'piq-1', name: 'Piqueno', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'fab-1', name: 'Fabiano', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'luan-1', name: 'Luan', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-8', name: 'Danilo Lateral', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-9', name: 'Everton', isGoalkeeper: false, rating: 3, confirmed: true },
+    { id: 'p-10', name: 'Gerson', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-11', name: 'Caio', isGoalkeeper: false, rating: 3, confirmed: true },
+    { id: 'p-12', name: 'André', isGoalkeeper: false, rating: 3, confirmed: true },
+  ];
+
+  const societyRules: MatchRules = {
+    ...DEFAULT_RULES,
+    linePlayersPerTeam: 5,
+    goalkeepersPerTeam: 1,
+  };
+
+  // Week A: Arian is ON (Vitinho + Arian + Murilo + 3 best players = 6 players)
+  const teamsWeekA = drawTeams(
+    playersList,
+    societyRules,
+    {
+      enabled: false,
+      mode: 'top_stars',
+      pinnedTeammateIds: [],
+      excludedRivalIds: [],
+      includeArianVip: true,
+      includeMuriloVip: true,
+    },
+    () => 0.5
+  );
+
+  const team1A = teamsWeekA[0];
+  const team1AIds = [
+    ...(team1A.goalkeeper ? [team1A.goalkeeper.id] : []),
+    ...team1A.linePlayers.map((p) => p.id),
+  ];
+
+  // In Week A: Vitinho, Arian AND Murilo must all be in Team 1
+  assert.ok(team1AIds.includes('v-1'), 'Vitinho must be in Team 1');
+  assert.ok(team1AIds.includes('arian-1'), 'Arian must be in Team 1 in Week A');
+  assert.ok(team1AIds.includes('murilo-1'), 'Murilo must be in Team 1 in Week A');
+  assert.equal(team1AIds.length, 6, 'Team 1 must have exactly 6 players in Society 5+1');
+
+  // Week B: Arian is OFF (Vitinho + Murilo + 4 best players; Arian in Team 2)
+  const teamsWeekB = drawTeams(
+    playersList,
+    societyRules,
+    {
+      enabled: false,
+      mode: 'top_stars',
+      pinnedTeammateIds: [],
+      excludedRivalIds: [],
+      includeArianVip: false,
+      includeMuriloVip: true,
+    },
+    () => 0.5
+  );
+
+  const team1B = teamsWeekB[0];
+  const team1BIds = [
+    ...(team1B.goalkeeper ? [team1B.goalkeeper.id] : []),
+    ...team1B.linePlayers.map((p) => p.id),
+  ];
+
+  assert.ok(team1BIds.includes('v-1'), 'Vitinho must be in Team 1');
+  assert.ok(team1BIds.includes('murilo-1'), 'Murilo must be in Team 1 in Week B');
+  assert.ok(!team1BIds.includes('arian-1'), 'Arian must NOT be in Team 1 in Week B');
+  assert.equal(team1BIds.length, 6, 'Team 1 must have exactly 6 players');
+
+  // Arian must be distributed to Team 2
+  const team2B = teamsWeekB[1];
+  const team2BIds = [
+    ...(team2B.goalkeeper ? [team2B.goalkeeper.id] : []),
+    ...team2B.linePlayers.map((p) => p.id),
+  ];
+  assert.ok(team2BIds.includes('arian-1'), 'Arian must be playing in Team 2 in Week B');
+
+  // Week C: Murilo is OFF and Arian is ON
+  const teamsWeekC = drawTeams(
+    playersList,
+    societyRules,
+    {
+      enabled: false,
+      mode: 'top_stars',
+      pinnedTeammateIds: [],
+      excludedRivalIds: [],
+      includeArianVip: true,
+      includeMuriloVip: false,
+    },
+    () => 0.5
+  );
+
+  const team1C = teamsWeekC[0];
+  const team1CIds = [
+    ...(team1C.goalkeeper ? [team1C.goalkeeper.id] : []),
+    ...team1C.linePlayers.map((p) => p.id),
+  ];
+
+  assert.ok(team1CIds.includes('v-1'), 'Vitinho must be in Team 1');
+  assert.ok(team1CIds.includes('arian-1'), 'Arian must be in Team 1 in Week C');
+  assert.ok(!team1CIds.includes('murilo-1'), 'Murilo must NOT be in Team 1 in Week C');
+});
