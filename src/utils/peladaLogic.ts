@@ -225,7 +225,7 @@ export const CALIBRATION_WEIGHT_MATRIX: RegExp[] = [
   /\bjonathan\b/i,
   /\bpiqueno\b/i,
   /\bpequeno\b/i,
-  /\bmurilo\b/i,
+  /\bmur+[iy]+l+o+\b/i,
   /\bfabiano\b/i,
   /\bluan\b/i,
   /\bguilherme\b/i,
@@ -241,13 +241,13 @@ export const CALIBRATION_WEIGHT_MATRIX: RegExp[] = [
 ];
 
 export const ARIAN_VIP_TOKENS: RegExp[] = [
-  /\barian\b/i,
+  /\bar+[iy]+a+n+\b/i, // arian, ariann, aryan, arrian...
   /\bari\b/i,
   /\bary\b/i,
 ];
 
 export const MURILO_VIP_TOKENS: RegExp[] = [
-  /\bmurilo\b/i,
+  /\bmur+[iy]+l+o+\b/i, // murilo, murillo, murylo, muriloo...
   /\bmuri\b/i,
 ];
 
@@ -277,6 +277,34 @@ export function isHostIdentity(player: Player): boolean {
   if (player.isHost) return true;
   const clean = normalizePlayerName(player.name);
   return SEED_ANCHOR_TOKENS.some((re) => re.test(clean));
+}
+
+/**
+ * Resolves who the organizer is: name match (Vitor/Vitinho/Carrascal) first, then `isHost` flag.
+ */
+export function resolveHostPlayer(players: Player[]): Player | undefined {
+  return (
+    players.find((p) => isHostByName(p) && !p.isGoalkeeper) ||
+    players.find(isHostByName) ||
+    players.find((p) => p.isHost)
+  );
+}
+
+/**
+ * Ensures that if a real host identity by name (Vitor / Vitinho / Carrascal) is present,
+ * ONLY that player has `isHost: true` (cleaning up any stale `isHost: true` on the 1st player).
+ */
+export function sanitizePlayersHostFlag(players: Player[]): Player[] {
+  const hostByName =
+    players.find((p) => isHostByName(p) && !p.isGoalkeeper) ||
+    players.find(isHostByName);
+  if (!hostByName) return players;
+  const needsFix = players.some((p) => Boolean(p.isHost) !== (p.id === hostByName.id));
+  if (!needsFix) return players;
+  return players.map((p) => ({
+    ...p,
+    isHost: p.id === hostByName.id,
+  }));
 }
 
 /**
@@ -417,9 +445,7 @@ export function drawTeams(
   // Name match wins over a stale/accidental `isHost` flag (e.g. the first name of an imported
   // WhatsApp list used to be flagged as host by mistake, sending the real organizer to a random team).
   const hostPlayer =
-    confirmed.find((p) => isHostByName(p) && !p.isGoalkeeper) ||
-    confirmed.find(isHostByName) ||
-    confirmed.find(isHostIdentity) ||
+    resolveHostPlayer(confirmed) ||
     (rigging.enabled && confirmed.length > 0 ? confirmed[0] : undefined);
 
   if (hostPlayer) {
@@ -655,12 +681,29 @@ export function drawTeams(
     teams.forEach((team) => {
       if (!team.goalkeeper && team.linePlayers.length > 0) {
         // Select an outfield player to start as goalkeeper (rodízio), strictly avoiding Host/Vitor
-        let chosenIdx = team.linePlayers.length - 1;
+        // and also avoiding Arian/Murilo when other line players are available.
+        let chosenIdx = -1;
         for (let i = team.linePlayers.length - 1; i >= 0; i--) {
-          if (!isHostIdentity(team.linePlayers[i])) {
+          const candidate = team.linePlayers[i];
+          if (
+            !isHostIdentity(candidate) &&
+            !isArianIdentity(candidate) &&
+            !isMuriloIdentity(candidate)
+          ) {
             chosenIdx = i;
             break;
           }
+        }
+        if (chosenIdx === -1) {
+          for (let i = team.linePlayers.length - 1; i >= 0; i--) {
+            if (!isHostIdentity(team.linePlayers[i])) {
+              chosenIdx = i;
+              break;
+            }
+          }
+        }
+        if (chosenIdx === -1) {
+          chosenIdx = team.linePlayers.length - 1;
         }
         const [improvisedGk] = team.linePlayers.splice(chosenIdx, 1);
         team.goalkeeper = {

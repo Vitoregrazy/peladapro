@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Check, Copy, KeyRound, Lock, MessageCircle, ShieldCheck, Sparkles, UserCheck, X } from 'lucide-react';
 import {
   activateVipLicense,
@@ -15,6 +15,7 @@ interface VipLicenseModalProps {
   onLicenseChanged: () => void;
   rigging?: RiggingConfig;
   onRiggingChange?: (next: RiggingConfig) => void;
+  initialSecretOpen?: boolean;
 }
 
 export const VipLicenseModal: React.FC<VipLicenseModalProps> = ({
@@ -23,6 +24,7 @@ export const VipLicenseModal: React.FC<VipLicenseModalProps> = ({
   onLicenseChanged,
   rigging,
   onRiggingChange,
+  initialSecretOpen = false,
 }) => {
   const [status, setStatus] = useState<LicenseStatus>(() => getLicenseStatus());
   const [inputKey, setInputKey] = useState('');
@@ -30,10 +32,16 @@ export const VipLicenseModal: React.FC<VipLicenseModalProps> = ({
 
   // Painel Secreto do Vitor (Gerador de Chaves)
   const [secretTapCount, setSecretTapCount] = useState(0);
-  const [showSecretGenerator, setShowSecretGenerator] = useState(false);
+  const [showSecretGenerator, setShowSecretGenerator] = useState(initialSecretOpen);
   const [clientDeviceIdInput, setClientDeviceIdInput] = useState('');
   const [generatedClientKey, setGeneratedClientKey] = useState('');
   const [copiedKey, setCopiedKey] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && initialSecretOpen) {
+      setShowSecretGenerator(true);
+    }
+  }, [isOpen, initialSecretOpen]);
 
   if (!isOpen) return null;
 

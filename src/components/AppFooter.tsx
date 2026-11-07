@@ -13,7 +13,7 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
   const handleManualCheck = async () => {
     if (checking) return;
     setChecking(true);
-    setStatusMsg({ isError: false, text: 'Consultando servidor da Vercel...' });
+    setStatusMsg({ isError: false, text: 'Consultando servidor de atualizações...' });
 
     try {
       const res = await otaService.checkForUpdate(true);

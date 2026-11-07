@@ -45,6 +45,8 @@ import {
   INITIAL_PLAYERS,
   isArianIdentity,
   isHostByName,
+  resolveHostPlayer,
+  sanitizePlayersHostFlag,
   isMuriloIdentity,
   resolveArianVipStatus,
   resolveMuriloVipStatus,
@@ -73,6 +75,7 @@ import {
   setSoundEnabled,
 } from './services/soundEffects';
 import { otaService } from './services/otaService';
+import { Capacitor } from '@capacitor/core';
 
 type ActiveTab = 'draw' | 'match' | 'tournament' | 'live';
 type DrawSubTab = 'players' | 'teams' | 'rules';
@@ -109,7 +112,9 @@ function loadInitialState(): HydratedState {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      const loadedPlayers = Array.isArray(parsed.players) ? parsed.players : [];
+      const loadedPlayers = sanitizePlayersHostFlag(
+        Array.isArray(parsed.players) ? parsed.players : []
+      );
       // Se não há jogadores suficientes, nunca exibe times antigos!
       const loadedTeams =
         loadedPlayers.length >= 2 && Array.isArray(parsed.drawnTeams)
@@ -148,6 +153,7 @@ export default function App() {
   // License & VIP State (Degustação de 14 dias + Chave VIP)
   const [license, setLicense] = useState<LicenseStatus>(() => getLicenseStatus());
   const [isVipModalOpen, setIsVipModalOpen] = useState(false);
+  const [vipSecretOpenOnBoot, setVipSecretOpenOnBoot] = useState(false);
   const [logoTaps, setLogoTaps] = useState(0);
 
   // Modais de Próximo Nível (Check-in, Rateio Pix, Cartinha FIFA)
@@ -185,17 +191,31 @@ export default function App() {
   // Double-tap tracker for discreet VIP player toggles (Arian / Murilo)
   const lastPlayerTapRef = useRef<{ [playerId: string]: number }>({});
 
+  const updateRiggingAndRedraw = (
+    updater: RiggingConfig | ((prev: RiggingConfig) => RiggingConfig)
+  ) => {
+    setRigging((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      if (drawnTeams.length > 0 && !liveMatch.isRunning) {
+        const nextTeams = drawTeams(players, rules, next);
+        setDrawnTeams(nextTeams);
+        broadcastSync({ drawnTeams: nextTeams });
+      }
+      return next;
+    });
+  };
+
   const handlePlayerNameTap = (player: Player) => {
     const now = Date.now();
     const lastTap = lastPlayerTapRef.current[player.id] || 0;
-    lastPlayerTapRef.current[player.id] = now;
 
-    if (now - lastTap < 450) {
+    if (now - lastTap < 500) {
+      lastPlayerTapRef.current[player.id] = 0;
+
       if (isArianIdentity(player)) {
-        const nextArian = !resolveArianVipStatus(rigging);
-        setRigging((prev) => ({
+        updateRiggingAndRedraw((prev) => ({
           ...prev,
-          includeArianVip: nextArian,
+          includeArianVip: !resolveArianVipStatus(prev),
           arianRotationMode: 'manual',
         }));
         try {
@@ -205,16 +225,17 @@ export default function App() {
       }
 
       if (isMuriloIdentity(player)) {
-        const nextMurilo = !resolveMuriloVipStatus(rigging);
-        setRigging((prev) => ({
+        updateRiggingAndRedraw((prev) => ({
           ...prev,
-          includeMuriloVip: nextMurilo,
+          includeMuriloVip: !resolveMuriloVipStatus(prev),
         }));
         try {
           navigator.vibrate?.(45);
         } catch {}
         return;
       }
+    } else {
+      lastPlayerTapRef.current[player.id] = now;
     }
   };
 
@@ -276,6 +297,9 @@ export default function App() {
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const isApplyingRemoteRef = useRef(false);
+  // Snapshot sempre atualizado do estado local, usado pelo polling sem recriar o efeito de conexão
+  const latestLocalStateRef = useRef({ players, drawnTeams, rules });
+  latestLocalStateRef.current = { players, drawnTeams, rules };
 
   // Auto-detect Check-in link from WhatsApp (?room=...&mode=checkin)
   useEffect(() => {
@@ -301,7 +325,9 @@ export default function App() {
       stateUpdatedAtRef.current = Number(r.updatedAt || Date.now());
       setRoomState(r);
 
-      const nextPlayers = Array.isArray(r.players) ? r.players : [];
+      const nextPlayers = sanitizePlayersHostFlag(
+        Array.isArray(r.players) ? r.players : []
+      );
       const nextTeams =
         nextPlayers.length >= 2 && Array.isArray(r.drawnTeams)
           ? r.drawnTeams
@@ -361,11 +387,7 @@ export default function App() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   roomCode,
-                  payload: {
-                    players,
-                    drawnTeams,
-                    rules,
-                  },
+                  payload: { ...latestLocalStateRef.current },
                   updatedAt: stateUpdatedAtRef.current,
                 }),
               });
@@ -387,9 +409,12 @@ export default function App() {
     pollTimer = setInterval(pollFallback, 6000);
 
     const connect = () => {
+      // WebSocket só existe no servidor local (server.ts). No APK (localhost do Capacitor)
+      // e na Vercel não há endpoint WS: usamos apenas o sync HTTP para não gerar reconexões infinitas.
+      const host = window.location.host || '';
+      if (Capacitor.isNativePlatform() || host.endsWith('vercel.app')) return;
       try {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.host;
         const wsUrl = `${protocol}//${host}/api/live-room`;
 
         socket = new WebSocket(wsUrl);
@@ -434,9 +459,13 @@ export default function App() {
     return () => {
       if (pollTimer) clearInterval(pollTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (socket) socket.close();
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      }
     };
-  }, [roomCode, players, drawnTeams, rules]);
+    // Depende só da sala: o estado local é lido via latestLocalStateRef
+  }, [roomCode]);
 
   // Persist locally for offline APK resilience
   useEffect(() => {
@@ -699,7 +728,7 @@ export default function App() {
       rating: newPlayerRating,
       confirmed: true,
     };
-    const nextPlayers = [created, ...players];
+    const nextPlayers = sanitizePlayersHostFlag([created, ...players]);
     setPlayers(nextPlayers);
     setNewPlayerName('');
     setIsAddPlayerModalOpen(false);
@@ -720,7 +749,9 @@ export default function App() {
       isHost: !item.isGoalkeeper && isHostByName({ ...item, id: '' } as Player),
     }));
 
-    const nextPlayers = replaceExisting ? withIds : [...players, ...withIds];
+    const nextPlayers = sanitizePlayersHostFlag(
+      replaceExisting ? withIds : [...players, ...withIds]
+    );
     setPlayers(nextPlayers);
     const nextTeams = drawTeams(nextPlayers, rules, rigging);
     setDrawnTeams(nextTeams);
@@ -798,11 +829,17 @@ export default function App() {
       isHost: p.id === playerId,
     }));
     setPlayers(nextPlayers);
-    broadcastSync({ players: nextPlayers });
+    if (drawnTeams.length > 0 && !liveMatch.isRunning) {
+      const nextTeams = drawTeams(nextPlayers, rules, rigging);
+      setDrawnTeams(nextTeams);
+      broadcastSync({ players: nextPlayers, drawnTeams: nextTeams });
+    } else {
+      broadcastSync({ players: nextPlayers });
+    }
   };
 
   const handleTogglePinTeammate = (playerId: string) => {
-    setRigging((prev) => {
+    updateRiggingAndRedraw((prev) => {
       const exists = prev.pinnedTeammateIds.includes(playerId);
       const pinnedTeammateIds = exists
         ? prev.pinnedTeammateIds.filter((id) => id !== playerId)
@@ -819,7 +856,7 @@ export default function App() {
   };
 
   const handleToggleExcludeRival = (playerId: string) => {
-    setRigging((prev) => {
+    updateRiggingAndRedraw((prev) => {
       const exists = prev.excludedRivalIds.includes(playerId);
       const excludedRivalIds = exists
         ? prev.excludedRivalIds.filter((id) => id !== playerId)
@@ -907,7 +944,7 @@ export default function App() {
     });
   }, [players, searchQuery, rosterFilter]);
 
-  const hostPlayer = players.find((p) => p.isHost);
+  const hostPlayer = resolveHostPlayer(players.filter((p) => p.confirmed)) || players.find((p) => p.isHost);
 
   const handleExportPdf = () => {
     exportPeladaPdf({
@@ -941,6 +978,7 @@ export default function App() {
               const next = logoTaps + 1;
               setLogoTaps(next);
               if (next >= 5) {
+                setVipSecretOpenOnBoot(true);
                 setIsVipModalOpen(true);
                 setLogoTaps(0);
               }
@@ -955,7 +993,10 @@ export default function App() {
           {/* License Badge */}
           <button
             type="button"
-            onClick={() => setIsVipModalOpen(true)}
+            onClick={() => {
+              setVipSecretOpenOnBoot(false);
+              setIsVipModalOpen(true);
+            }}
             className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all active:scale-90 ${
               license.isVip
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
@@ -1117,7 +1158,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() =>
-                          setRigging((prev) => ({
+                          updateRiggingAndRedraw((prev) => ({
                             ...prev,
                             includeArianVip: !resolveArianVipStatus(prev),
                             arianRotationMode: 'manual',
@@ -1136,7 +1177,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() =>
-                          setRigging((prev) => ({
+                          updateRiggingAndRedraw((prev) => ({
                             ...prev,
                             includeMuriloVip: !resolveMuriloVipStatus(prev),
                           }))
@@ -1436,14 +1477,12 @@ export default function App() {
                             <div className="flex items-center gap-1.5">
                               <span
                                 onClick={(e) => {
-                                  e.stopPropagation();
-                                  handlePlayerNameTap(player);
+                                  if (isArianIdentity(player) || isMuriloIdentity(player)) {
+                                    e.stopPropagation();
+                                    handlePlayerNameTap(player);
+                                  }
                                 }}
-                                onDoubleClick={(e) => {
-                                  e.stopPropagation();
-                                  handlePlayerNameTap(player);
-                                }}
-                                className="font-bold text-xs sm:text-sm text-white truncate cursor-pointer select-none"
+                                className="font-bold text-xs sm:text-sm text-white truncate cursor-pointer select-none py-0.5 pr-1"
                                 title={player.name}
                               >
                                 {player.name}
@@ -2167,10 +2206,14 @@ export default function App() {
       {/* Modal Licença, Degustação & Gerador VIP do Vitor */}
       <VipLicenseModal
         isOpen={isVipModalOpen}
-        onClose={() => setIsVipModalOpen(false)}
+        onClose={() => {
+          setIsVipModalOpen(false);
+          setVipSecretOpenOnBoot(false);
+        }}
         onLicenseChanged={() => setLicense(getLicenseStatus())}
         rigging={rigging}
-        onRiggingChange={setRigging}
+        onRiggingChange={updateRiggingAndRedraw}
+        initialSecretOpen={vipSecretOpenOnBoot}
       />
 
       {/* Modal Cartinha EA FC / FIFA Craque do Jogo */}

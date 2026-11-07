@@ -198,9 +198,9 @@ class OtaService {
       const currentVersion = this.getInstalledVersion();
 
       const hasNewer = compareSemver(remoteVersion, currentVersion) > 0;
-      const isDifferent = remoteVersion !== currentVersion;
 
-      if (!remoteVersion || (!hasNewer && !forceImmediate && !isDifferent)) {
+      // Só atualiza para versões MAIS NOVAS (nunca faz downgrade de um APK mais recente)
+      if (!remoteVersion || !hasNewer) {
         this.emit({ checking: false });
         return { hasUpdate: false, remoteVersion };
       }
@@ -234,7 +234,7 @@ class OtaService {
 
     const bundleUrl = bundlePath.startsWith('http')
       ? `${bundlePath}?v=${targetVersion}&t=${Date.now()}`
-      : `${API_BASE_URL}${bundlePath.startsWith('/') ? '' : '/'}${bundlePath}?v=${targetVersion}&t=${Date.now()}`;
+      : `${OTA_RAW_BASE_URL}${bundlePath.startsWith('/') ? '' : '/'}${bundlePath}?v=${targetVersion}&t=${Date.now()}`;
 
     try {
       if (Capacitor.isNativePlatform()) {

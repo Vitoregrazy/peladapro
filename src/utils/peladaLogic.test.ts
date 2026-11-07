@@ -13,6 +13,7 @@ import {
   parseWhatsAppList,
   recordGoalScorerInMatch,
   rotateKingOfTheCourt,
+  sanitizePlayersHostFlag,
   syncChampionshipKnockout,
 } from './peladaLogic';
 import { MatchRules, Player, RiggingConfig } from '../types/pelada';
@@ -439,4 +440,56 @@ test('Arian and Murilo weekly VIP stealth rotation: allows choosing Arian or Mur
   assert.ok(team1CIds.includes('v-1'), 'Vitinho must be in Team 1');
   assert.ok(team1CIds.includes('arian-1'), 'Arian must be in Team 1 in Week C');
   assert.ok(!team1CIds.includes('murilo-1'), 'Murilo must NOT be in Team 1 in Week C');
+});
+
+test('Regressão 06/11: lista real do WhatsApp (Fernando marcado como host, "Murillo" com 2 L) coloca Vitinho no Time 1 com os craques', () => {
+  const names = [
+    'Fernando', 'Lucas', 'Salgadinho', 'Vitinho', 'Archanjo', 'Piqueno', 'Arian', 'VNᶜʳᶠ',
+    'Murillo', 'Luan', 'Bello', 'Felipe', 'Thiago', 'lucas bayer', 'Fabiano', 'Reynan',
+    'henderson', 'Moreira', 'Jn', 'João Pedro', 'Miguel', 'Thierry', 'Henry',
+  ];
+  const realPlayers: Player[] = names.map((name, idx) => ({
+    id: `p-wa-${idx}`,
+    name,
+    isGoalkeeper: false,
+    rating: 4,
+    confirmed: true,
+    isHost: idx === 0, // flag antigo e errado no 1º da lista
+  }));
+  const rigging: RiggingConfig = {
+    enabled: false,
+    mode: 'top_stars',
+    pinnedTeammateIds: [],
+    excludedRivalIds: [],
+    includeArianVip: true,
+    includeMuriloVip: true,
+    arianRotationMode: 'manual',
+  };
+
+  const sanitized = sanitizePlayersHostFlag(realPlayers);
+  assert.equal(sanitized.find((p) => p.name === 'Fernando')?.isHost, false);
+  assert.equal(sanitized.find((p) => p.name === 'Vitinho')?.isHost, true);
+
+  for (let run = 0; run < 25; run++) {
+    const teams = drawTeams(realPlayers, DEFAULT_RULES, rigging);
+    const team1 = [teams[0].goalkeeper, ...teams[0].linePlayers].filter(Boolean).map((p) => p!.name);
+    assert.ok(team1.includes('Vitinho'), `Vitinho deveria estar no Time 1: ${team1.join(', ')}`);
+    assert.ok(team1.includes('Arian'), `Arian deveria estar no Time 1: ${team1.join(', ')}`);
+    assert.ok(team1.includes('Murillo'), `Murillo deveria estar no Time 1: ${team1.join(', ')}`);
+    assert.ok(!team1.includes('Fernando'), 'Fernando não é craque nem organizador');
+    assert.notEqual(teams[0].goalkeeper?.name, 'Vitinho', 'Vitinho nunca vai pro gol improvisado');
+    assert.notEqual(teams[0].goalkeeper?.name, 'Arian', 'Arian não vai pro gol improvisado');
+    assert.notEqual(teams[0].goalkeeper?.name, 'Murillo', 'Murillo não vai pro gol improvisado');
+  }
+
+  // Desligando Arian e Murilo, eles vão para outro time
+  const off = drawTeams(realPlayers, DEFAULT_RULES, {
+    ...rigging,
+    includeArianVip: false,
+    includeMuriloVip: false,
+  });
+  const offTeam1 = [off[0].goalkeeper, ...off[0].linePlayers].filter(Boolean).map((p) => p!.name);
+  assert.ok(offTeam1.includes('Vitinho'));
+  assert.ok(!offTeam1.includes('Arian'));
+  assert.ok(!offTeam1.includes('Murillo'));
 });
