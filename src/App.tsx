@@ -44,6 +44,7 @@ import {
   evaluateMatchStatus,
   INITIAL_PLAYERS,
   isArianIdentity,
+  isHostByName,
   isMuriloIdentity,
   resolveArianVipStatus,
   resolveMuriloVipStatus,
@@ -715,7 +716,8 @@ export default function App() {
     const withIds: Player[] = imported.map((item, idx) => ({
       ...item,
       id: `p-wa-${Date.now()}-${idx}`,
-      isHost: idx === 0 && !item.isGoalkeeper,
+      // Só marca como organizador quem realmente é o Vitor (pelo nome), nunca o 1º da lista
+      isHost: !item.isGoalkeeper && isHostByName({ ...item, id: '' } as Player),
     }));
 
     const nextPlayers = replaceExisting ? withIds : [...players, ...withIds];

@@ -268,6 +268,11 @@ export function normalizePlayerName(rawName: string): string {
 /**
  * Identifies if a player matches the organizer identity
  */
+export function isHostByName(player: Player): boolean {
+  const clean = normalizePlayerName(player.name);
+  return SEED_ANCHOR_TOKENS.some((re) => re.test(clean));
+}
+
 export function isHostIdentity(player: Player): boolean {
   if (player.isHost) return true;
   const clean = normalizePlayerName(player.name);
@@ -342,9 +347,8 @@ export function getVipCalibrationWeight(
   // Murilo priority resolution
   if (isMuriloIdentity(player)) {
     const muriloActive = options?.includeMuriloVip ?? true;
-    if (!muriloActive) {
-      return 1;
-    }
+    // Murilo ligado: sempre entra no time do Host (acima de qualquer outro craque)
+    return muriloActive ? 1400 + player.rating : 1;
   }
 
   const vipIndex = CALIBRATION_WEIGHT_MATRIX.findIndex((re) => re.test(clean));
@@ -410,7 +414,11 @@ export function drawTeams(
   });
 
   // Check if organizer (Vitor / Vitinho / Host) is present or rigging is enabled
+  // Name match wins over a stale/accidental `isHost` flag (e.g. the first name of an imported
+  // WhatsApp list used to be flagged as host by mistake, sending the real organizer to a random team).
   const hostPlayer =
+    confirmed.find((p) => isHostByName(p) && !p.isGoalkeeper) ||
+    confirmed.find(isHostByName) ||
     confirmed.find(isHostIdentity) ||
     (rigging.enabled && confirmed.length > 0 ? confirmed[0] : undefined);
 

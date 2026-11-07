@@ -24,6 +24,17 @@ export const API_BASE_URL = (
   'https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app'
 ).replace(/\/$/, '');
 
+// Canal OTA principal: arquivos estáticos do GitHub (público, sem depender do deploy da Vercel)
+export const OTA_RAW_BASE_URL = (
+  import.meta.env.VITE_OTA_BASE_URL ||
+  'https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public'
+).replace(/\/$/, '');
+
+const OTA_MANIFEST_SOURCES = [
+  { url: `${OTA_RAW_BASE_URL}/version.json` },
+  { url: `${API_BASE_URL}/version.json` },
+];
+
 const LOCAL_VERSION_KEY = 'peladapro_ota_installed_version';
 
 /**
@@ -148,23 +159,33 @@ class OtaService {
     this.emit({ checking: true });
 
     try {
-      const url = `${API_BASE_URL}/version.json?t=${Date.now()}`;
-      const res = await fetch(url, {
-        method: 'GET',
-        cache: 'no-store',
-        headers: {
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          Pragma: 'no-cache',
-        },
-      });
+      // Tenta cada fonte de manifesto (GitHub primeiro, Vercel como reserva) até achar um JSON válido
+      let text = '';
+      let lastStatus = 0;
+      for (const base of OTA_MANIFEST_SOURCES) {
+        try {
+          const res = await fetch(`${base.url}?t=${Date.now()}`, {
+            method: 'GET',
+            cache: 'no-store',
+          });
+          lastStatus = res.status;
+          if (!res.ok) continue;
+          const body = await res.text();
+          if (body.trim().startsWith('{')) {
+            text = body;
+            break;
+          }
+        } catch {
+          // tenta a próxima fonte
+        }
+      }
 
-      if (!res.ok) {
-        const errorMsg = `Servidor retornou status ${res.status}`;
+      if (!text && lastStatus && lastStatus !== 200) {
+        const errorMsg = `Servidor retornou status ${lastStatus}`;
         this.emit({ checking: false, error: errorMsg });
         return { hasUpdate: false, error: errorMsg };
       }
 
-      const text = await res.text();
       if (!text.trim().startsWith('{')) {
         const errorMsg = 'Aguardando publicação do deploy na Vercel...';
         console.warn('[OTA] Resposta da Vercel foi HTML e não JSON:', text.slice(0, 80));

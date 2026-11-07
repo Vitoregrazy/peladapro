@@ -1,11 +1,11 @@
 {
-  "version": "1.2.2",
-  "buildId": "1.2.2-1794000867173",
-  "checksum": "415b72f642354238a2496fae1fd1449b64896a60ea27a91ebb2ba4e85d4120e0",
-  "timestamp": "2026-11-06T21:34:27.173Z",
+  "version": "1.2.3",
+  "buildId": "1.2.3-1794050880667",
+  "checksum": "e79d8cb90376c203bfb1777628e3b502e497a4dd46059efc6156ec1f76604879",
+  "timestamp": "2026-11-07T11:28:00.667Z",
   "forceUpdate": true,
   "mandatory": true,
   "bundlePath": "/ota-bundle.zip",
-  "bundleUrl": "https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app/ota-bundle.zip",
+  "bundleUrl": "https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public/ota-bundle.zip",
   "releaseNotes": "Atualização oficial PeladaPro: estabilidade, sorteio furtivo e rotação Arian/Murilo."
 }

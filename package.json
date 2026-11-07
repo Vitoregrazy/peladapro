@@ -1,7 +1,7 @@
 {
   "name": "peladapro",
   "private": true,
-  "version": "1.2.2",
+  "version": "1.2.3",
   "type": "module",
   "scripts": {
     "dev": "node ./node_modules/tsx/dist/cli.mjs server.ts",
