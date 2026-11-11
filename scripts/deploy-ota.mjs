@@ -44,7 +44,7 @@ try {
   console.log('📱 Todos os APKs instalados nos celulares atualizarão sozinhos:');
   console.log('   - No próximo boot do app');
   console.log('   - Ao voltar do segundo plano (minimizar/abrir)');
-  console.log('   - A cada 30 segundos enquanto estiver aberto');
+  console.log('   - A cada 45 segundos enquanto estiver aberto');
   console.log('====================================================\n');
 } catch (err) {
   console.error('\n❌ Erro durante o Deploy OTA:', err.message);

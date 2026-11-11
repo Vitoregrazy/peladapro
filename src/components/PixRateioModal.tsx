@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Check, Copy, DollarSign, QrCode, Share2, Users, X } from 'lucide-react';
+import { Check, Copy, DollarSign, MessageCircle, QrCode, Share2, Users, X } from 'lucide-react';
 import { Player } from '../types/pelada';
+import { openWhatsAppWithText } from '../utils/whatsappShare';
 
 interface PixRateioModalProps {
   isOpen: boolean;
@@ -188,17 +189,30 @@ export const PixRateioModal: React.FC<PixRateioModalProps> = ({
         <div className="space-y-2 pt-1">
           <button
             type="button"
-            onClick={handleCopyWhatsAppMessage}
-            className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 active:scale-95 transition-all"
+            onClick={() => {
+              void openWhatsAppWithText(buildWhatsAppMessage(), 'PeladaPro — Rateio Pix');
+              setCopiedMessage(true);
+              setTimeout(() => setCopiedMessage(false), 2500);
+            }}
+            className="w-full py-3 bg-[#25D366] hover:bg-[#20bd5a] text-slate-950 font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-[#25D366]/20 active:scale-95 transition-all"
           >
-            {copiedMessage ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
-            <span>{copiedMessage ? 'Mensagem Copiada! Cole no Zap' : 'Copiar Cobrança Completa p/ WhatsApp'}</span>
+            <MessageCircle className="w-4 h-4" />
+            <span>Enviar Cobrança no WhatsApp</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleCopyWhatsAppMessage}
+            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 font-bold text-xs rounded-xl flex items-center justify-center gap-2 active:scale-95 transition-all"
+          >
+            {copiedMessage ? <Check className="w-4 h-4 text-emerald-400" /> : <Share2 className="w-4 h-4" />}
+            <span>{copiedMessage ? 'Mensagem Copiada!' : 'Copiar Cobrança Completa'}</span>
           </button>
 
           <button
             type="button"
             onClick={onClose}
-            className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white font-bold text-xs rounded-xl"
+            className="w-full py-2 bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 font-bold text-xs rounded-xl"
           >
             Fechar
           </button>

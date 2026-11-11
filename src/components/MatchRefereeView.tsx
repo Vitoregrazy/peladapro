@@ -20,6 +20,11 @@ import {
   MatchRules,
 } from '../types/pelada';
 import { flipVirtualCoin } from '../utils/peladaLogic';
+import {
+  playCoinSound,
+  playWhistleMatchEnd,
+  playWhistleShort,
+} from '../services/soundEffects';
 import { SubTabNavigation } from './ui/SubTabNavigation';
 
 interface MatchRefereeViewProps {
@@ -75,6 +80,7 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
 
   const handleFlipCoin = () => {
     if (!teamA || !teamB || isFlipping) return;
+    playCoinSound();
     setIsFlipping(true);
     const nextToss = flipVirtualCoin(
       coinToss.callerTeamId || teamA.id,
@@ -116,6 +122,8 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
       ...liveMatch,
       addedStoppageMinutes: newStoppage,
       remainingSeconds: newRemaining,
+      remainingAtStart: newRemaining,
+      timerStartedAt: liveMatch.isRunning ? Date.now() : null,
       endedReason: null,
       winnerTeamId: null,
       events: [evt, ...liveMatch.events],
@@ -130,6 +138,8 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
       isRunning: false,
       configuredMinutes: mins,
       remainingSeconds: mins * 60,
+      remainingAtStart: mins * 60,
+      timerStartedAt: null,
       addedStoppageMinutes: 0,
       endedReason: null,
       winnerTeamId: null,
@@ -147,6 +157,10 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
       rules.goalLimit > 0 &&
       (nextScoreA >= rules.goalLimit || nextScoreB >= rules.goalLimit);
 
+    if (reachedGoalLimit) {
+      playWhistleMatchEnd();
+    }
+
     const evt: MatchEvent = {
       id: `evt-${Date.now()}`,
       type: 'goal',
@@ -162,6 +176,7 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
       scoreA: nextScoreA,
       scoreB: nextScoreB,
       isRunning: reachedGoalLimit ? false : liveMatch.isRunning,
+      timerStartedAt: reachedGoalLimit ? null : liveMatch.timerStartedAt,
       winnerTeamId: reachedGoalLimit ? scoringTeam.id : liveMatch.winnerTeamId,
       endedReason: reachedGoalLimit ? 'goal_limit' : liveMatch.endedReason,
       events: [evt, ...liveMatch.events],
@@ -198,6 +213,8 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
       ...liveMatch,
       isRunning: false,
       remainingSeconds: rules.durationMinutes * 60,
+      remainingAtStart: rules.durationMinutes * 60,
+      timerStartedAt: null,
       configuredMinutes: rules.durationMinutes,
       addedStoppageMinutes: 0,
       scoreA: 0,
@@ -319,11 +336,47 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    if (!liveMatch.isRunning && liveMatch.remainingSeconds <= 0) {
+                    if (liveMatch.isRunning) {
+                      const elapsedSec = liveMatch.timerStartedAt
+                        ? Math.floor((Date.now() - liveMatch.timerStartedAt) / 1000)
+                        : 0;
+                      const baseRem = liveMatch.remainingAtStart ?? liveMatch.remainingSeconds;
+                      const exactRemaining = Math.max(0, baseRem - elapsedSec);
+                      onUpdateLiveMatch({
+                        ...liveMatch,
+                        isRunning: false,
+                        remainingSeconds: exactRemaining,
+                        remainingAtStart: exactRemaining,
+                        timerStartedAt: null,
+                      });
+                      return;
+                    }
+
+                    playWhistleShort();
+                    if (liveMatch.endedReason === 'goal_limit') {
+                      const resetSeconds = rules.durationMinutes * 60;
                       onUpdateLiveMatch({
                         ...liveMatch,
                         isRunning: true,
-                        remainingSeconds: rules.durationMinutes * 60,
+                        remainingSeconds: resetSeconds,
+                        remainingAtStart: resetSeconds,
+                        timerStartedAt: Date.now(),
+                        configuredMinutes: rules.durationMinutes,
+                        addedStoppageMinutes: 0,
+                        scoreA: 0,
+                        scoreB: 0,
+                        events: [],
+                        endedReason: null,
+                        winnerTeamId: null,
+                      });
+                    } else if (liveMatch.remainingSeconds <= 0) {
+                      const resetSeconds = rules.durationMinutes * 60;
+                      onUpdateLiveMatch({
+                        ...liveMatch,
+                        isRunning: true,
+                        remainingSeconds: resetSeconds,
+                        remainingAtStart: resetSeconds,
+                        timerStartedAt: Date.now(),
                         addedStoppageMinutes: 0,
                         endedReason: null,
                         winnerTeamId: null,
@@ -331,7 +384,11 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
                     } else {
                       onUpdateLiveMatch({
                         ...liveMatch,
-                        isRunning: !liveMatch.isRunning,
+                        isRunning: true,
+                        remainingAtStart: liveMatch.remainingSeconds,
+                        timerStartedAt: Date.now(),
+                        endedReason: null,
+                        winnerTeamId: null,
                       });
                     }
                   }}
@@ -345,6 +402,11 @@ export const MatchRefereeView: React.FC<MatchRefereeViewProps> = ({
                     <>
                       <Pause className="w-4 h-4" />
                       PAUSAR TEMPO
+                    </>
+                  ) : liveMatch.endedReason === 'goal_limit' ? (
+                    <>
+                      <Play className="w-4 h-4" />
+                      NOVA PARTIDA
                     </>
                   ) : (
                     <>

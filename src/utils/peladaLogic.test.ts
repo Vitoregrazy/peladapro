@@ -16,6 +16,7 @@ import {
   sanitizePlayersHostFlag,
   syncChampionshipKnockout,
 } from './peladaLogic';
+import { hasDuplicatePlayer, normalizeRoomState } from './roomState';
 import { MatchRules, Player, RiggingConfig } from '../types/pelada';
 
 test('parseWhatsAppList extracts goalkeepers and outfield players from typical WhatsApp text', () => {
@@ -492,4 +493,71 @@ test('Regressão 06/11: lista real do WhatsApp (Fernando marcado como host, "Mur
   assert.ok(offTeam1.includes('Vitinho'));
   assert.ok(!offTeam1.includes('Arian'));
   assert.ok(!offTeam1.includes('Murillo'));
+});
+
+test('exportWhatsAppList para Times Sorteados inclui goleiro, jogadores de linha e link sem vazar estrelas', () => {
+  const samplePlayers: Player[] = [
+    { id: 'v-1', name: 'Vitinho', isGoalkeeper: false, rating: 5, isHost: true, confirmed: true },
+    { id: 'p-2', name: 'JN', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-3', name: 'Piqueno', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-4', name: 'Murilo', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-5', name: 'Fabiano', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-6', name: 'Luan', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-7', name: 'Carlos', isGoalkeeper: false, rating: 3, confirmed: true },
+    { id: 'p-8', name: 'Pedro', isGoalkeeper: false, rating: 3, confirmed: true },
+    { id: 'p-9', name: 'Marcos', isGoalkeeper: false, rating: 3, confirmed: true },
+    { id: 'p-10', name: 'Lucas', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-11', name: 'Thiago', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-12', name: 'Danilo', isGoalkeeper: false, rating: 4, confirmed: true },
+  ];
+  const teams = drawTeams(
+    samplePlayers,
+    DEFAULT_RULES,
+    {
+      enabled: false,
+      mode: 'top_stars',
+      pinnedTeammateIds: [],
+      excludedRivalIds: [],
+      includeArianVip: false,
+      includeMuriloVip: true,
+    },
+    () => 0.42
+  );
+  const msg = exportWhatsAppList(
+    samplePlayers,
+    DEFAULT_RULES,
+    teams,
+    'https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app/?room=SOC-10&mode=checkin'
+  );
+
+  assert.ok(msg.includes('*TIMES SORTEADOS:*'));
+  assert.ok(msg.includes('Goleiro:'));
+  assert.ok(msg.includes('Vitinho'));
+  assert.ok(msg.includes('https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app/?room=SOC-10&mode=checkin'));
+  assert.ok(!msg.includes('★'));
+  assert.ok(!msg.includes('Panela'));
+});
+
+test('normalizeRoomState preenche padrões seguros para JSONB parcial e hasDuplicatePlayer normaliza acentos', () => {
+  const partialRoom = normalizeRoomState({
+    code: ' soc-10 ',
+    players: [{ id: 'p1', name: 'João Silva', isGoalkeeper: false, rating: 4, confirmed: true }],
+    coinToss: {} as any,
+    liveMatch: {} as any,
+    championship: null,
+  });
+
+  assert.equal(partialRoom.code, 'SOC-10');
+  assert.deepEqual(partialRoom.liveMatch.events, []);
+  assert.equal(partialRoom.coinToss.callerChoice, 'cara');
+  assert.equal(partialRoom.championship, null);
+
+  assert.equal(
+    hasDuplicatePlayer(partialRoom.players, { id: 'p-new', name: 'joao   silva' }),
+    true
+  );
+  assert.equal(
+    hasDuplicatePlayer(partialRoom.players, { id: 'p-new-2', name: 'Carlos Alberto' }),
+    false
+  );
 });

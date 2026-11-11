@@ -4,10 +4,44 @@ import {
   drawTeams,
   INITIAL_PLAYERS,
 } from '../utils/peladaLogic';
+import {
+  createDefaultCoinToss,
+  createDefaultLiveMatch,
+  normalizeRoomState,
+} from '../utils/roomState';
 import { RoomState } from '../types/pelada';
 
 const memoryRooms = new Map<string, RoomState>();
 let schemaInitialized = false;
+
+export function buildSeedRoom(
+  code: string,
+  name: string,
+  hostName: string,
+  isServerSeed = true
+): RoomState {
+  return {
+    code: code.toUpperCase(),
+    name,
+    hostName,
+    players: [],
+    rules: { ...DEFAULT_RULES },
+    drawnTeams: [],
+    coinToss: createDefaultCoinToss('team-1'),
+    liveMatch: createDefaultLiveMatch(DEFAULT_RULES.durationMinutes, 'team-1', 'team-2'),
+    championship: null,
+    participants: [],
+    activityFeed: [
+      {
+        id: `act-${Date.now()}`,
+        text: `Sala privada ${code.toUpperCase()} criada`,
+        timestamp: Date.now(),
+      },
+    ],
+    updatedAt: 0,
+    isServerSeed,
+  };
+}
 
 export function buildInitialRoom(code: string, name: string, hostName: string): RoomState {
   const initialTeams = drawTeams(
@@ -29,29 +63,12 @@ export function buildInitialRoom(code: string, name: string, hostName: string): 
     players: INITIAL_PLAYERS.map((p) => ({ ...p })),
     rules: { ...DEFAULT_RULES },
     drawnTeams: initialTeams,
-    coinToss: {
-      result: null,
-      callerTeamId: initialTeams[0]?.id || 'team-1',
-      callerChoice: 'cara',
-      winnerTeamId: null,
-      ballTeamId: null,
-      fieldSideTeamA: 'Lado Norte (Esquerdo)',
-      fieldSideTeamB: 'Lado Sul (Direito)',
-      flippedAt: null,
-    },
-    liveMatch: {
-      isRunning: false,
-      remainingSeconds: DEFAULT_RULES.durationMinutes * 60,
-      configuredMinutes: DEFAULT_RULES.durationMinutes,
-      addedStoppageMinutes: 0,
-      scoreA: 0,
-      scoreB: 0,
-      teamAId: initialTeams[0]?.id || 'team-1',
-      teamBId: initialTeams[1]?.id || 'team-2',
-      events: [],
-      winnerTeamId: null,
-      endedReason: null,
-    },
+    coinToss: createDefaultCoinToss(initialTeams[0]?.id || 'team-1'),
+    liveMatch: createDefaultLiveMatch(
+      DEFAULT_RULES.durationMinutes,
+      initialTeams[0]?.id || 'team-1',
+      initialTeams[1]?.id || 'team-2'
+    ),
     championship: initialChamp,
     participants: [
       {
@@ -69,6 +86,7 @@ export function buildInitialRoom(code: string, name: string, hostName: string): 
       },
     ],
     updatedAt: Date.now(),
+    isServerSeed: false,
   };
 }
 
@@ -235,7 +253,8 @@ async function ensureSchema(): Promise<void> {
 }
 
 function mapRowToRoom(row: Record<string, unknown>): RoomState {
-  return {
+  const updatedAt = Number(row.updated_at);
+  return normalizeRoomState({
     code: String(row.code),
     name: String(row.name),
     hostName: String(row.host_name),
@@ -247,8 +266,9 @@ function mapRowToRoom(row: Record<string, unknown>): RoomState {
     championship: (row.championship as RoomState['championship']) || null,
     participants: (row.participants as RoomState['participants']) || [],
     activityFeed: (row.activity_feed as RoomState['activityFeed']) || [],
-    updatedAt: Number(row.updated_at) || Date.now(),
-  };
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
+    isServerSeed: updatedAt === 0,
+  });
 }
 
 export async function getRoomState(code: string): Promise<RoomState | null> {
@@ -268,8 +288,9 @@ export async function getRoomState(code: string): Promise<RoomState | null> {
 
   const ghRoom = await readRoomFromGitHub(normalized);
   if (ghRoom) {
-    memoryRooms.set(normalized, ghRoom);
-    return ghRoom;
+    const cleanGhRoom = normalizeRoomState(ghRoom);
+    memoryRooms.set(normalized, cleanGhRoom);
+    return cleanGhRoom;
   }
 
   const mem = memoryRooms.get(normalized) || null;
@@ -280,13 +301,13 @@ export async function getRoomState(code: string): Promise<RoomState | null> {
 }
 
 export async function saveRoomState(room: RoomState): Promise<RoomState> {
-  const normalized = room.code.toUpperCase().trim();
-  const updated: RoomState = {
+  const normalizedCode = room.code.toUpperCase().trim();
+  const normalized = normalizeRoomState({
     ...room,
-    code: normalized,
-    updatedAt: Date.now(),
-  };
-  memoryRooms.set(normalized, updated);
+    code: normalizedCode,
+    updatedAt: room.isServerSeed ? 0 : room.updatedAt || Date.now(),
+  });
+  memoryRooms.set(normalizedCode, normalized);
 
   if (getPostgresConnectionString()) {
     await ensureSchema();
@@ -309,25 +330,25 @@ export async function saveRoomState(room: RoomState): Promise<RoomState> {
         activity_feed = EXCLUDED.activity_feed,
         updated_at = EXCLUDED.updated_at`,
       [
-        updated.code,
-        updated.name,
-        updated.hostName,
-        JSON.stringify(updated.players),
-        JSON.stringify(updated.rules),
-        JSON.stringify(updated.drawnTeams),
-        JSON.stringify(updated.coinToss),
-        JSON.stringify(updated.liveMatch),
-        JSON.stringify(updated.championship),
-        JSON.stringify(updated.participants),
-        JSON.stringify(updated.activityFeed),
-        updated.updatedAt,
+        normalized.code,
+        normalized.name,
+        normalized.hostName,
+        JSON.stringify(normalized.players),
+        JSON.stringify(normalized.rules),
+        JSON.stringify(normalized.drawnTeams),
+        JSON.stringify(normalized.coinToss),
+        JSON.stringify(normalized.liveMatch),
+        JSON.stringify(normalized.championship),
+        JSON.stringify(normalized.participants),
+        JSON.stringify(normalized.activityFeed),
+        normalized.updatedAt,
       ]
     );
   } else if (getGitHubDbConfig()) {
-    await writeRoomToGitHub(updated);
+    await writeRoomToGitHub(normalized);
   }
 
-  return updated;
+  return normalized;
 }
 
 export function getMemoryRoomsMap(): Map<string, RoomState> {

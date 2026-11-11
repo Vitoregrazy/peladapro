@@ -157,37 +157,49 @@ export function parseWhatsAppList(rawText: string): {
 export function exportWhatsAppList(
   players: Player[],
   rules: MatchRules,
-  drawnTeams?: DrawnTeam[]
+  drawnTeams?: DrawnTeam[],
+  inviteUrl?: string
 ): string {
   const confirmed = players.filter((p) => p.confirmed);
   const gks = confirmed.filter((p) => p.isGoalkeeper);
   const outfield = confirmed.filter((p) => !p.isGoalkeeper);
 
   const lines: string[] = [];
-  lines.push(`*PELADAPRO — LISTA OFICIAL (${rules.linePlayersPerTeam}+${rules.goalkeepersPerTeam})*`);
-  lines.push(
-    `Tempo: ${rules.durationMinutes} min | Limite: ${
-      rules.goalLimit ? `${rules.goalLimit} gols` : 'Sem limite'
-    }`
-  );
-  lines.push('');
+  const limitLabel = rules.goalLimit ? `${rules.goalLimit} gols` : 'Sem limite';
 
   if (drawnTeams && drawnTeams.length > 0) {
+    lines.push(`⚽ *TIMES SORTEADOS — PELADAPRO (${rules.linePlayersPerTeam}+${rules.goalkeepersPerTeam})*`);
+    lines.push(`⏱️ Tempo: ${rules.durationMinutes} min | 🎯 Limite: ${limitLabel}`);
+    lines.push('');
     lines.push('*TIMES SORTEADOS:*');
+
     drawnTeams.forEach((team, idx) => {
       const statusTag =
         idx === 0 ? ' (Em Campo A)' : idx === 1 ? ' (Em Campo B)' : ` (Fila #${idx - 1})`;
-      lines.push(`\n*${team.name}${statusTag}*`);
+      const badge = idx === 0 ? '🟩' : idx === 1 ? '🟦' : '⏳';
+      lines.push(`\n${badge} *${team.name}${statusTag}*`);
       if (team.goalkeeper) {
         const gkTag = team.goalkeeper.isImprovisedGK ? ' (Rodízio)' : '';
-        lines.push(`Goleiro: ${team.goalkeeper.name}${gkTag}`);
+        lines.push(`🧤 Goleiro: ${team.goalkeeper.name}${gkTag}`);
+      } else if (rules.goalkeepersPerTeam > 0) {
+        lines.push(`🧤 Goleiro: Vaga aberta`);
       }
       team.linePlayers.forEach((lp, i) => {
-        lines.push(`${i + 1}. ${lp.name}`);
+        lines.push(`🏃 ${i + 1}. ${lp.name}`);
       });
     });
+
+    if (inviteUrl) {
+      lines.push('');
+      lines.push(`🔗 *Acompanhar placar e sala ao vivo:*`);
+      lines.push(inviteUrl);
+    }
     return lines.join('\n');
   }
+
+  lines.push(`*PELADAPRO — LISTA OFICIAL (${rules.linePlayersPerTeam}+${rules.goalkeepersPerTeam})*`);
+  lines.push(`Tempo: ${rules.durationMinutes} min | Limite: ${limitLabel}`);
+  lines.push('');
 
   if (rules.goalkeepersPerTeam > 0) {
     lines.push('*GOLEIROS:*');
@@ -205,6 +217,11 @@ export function exportWhatsAppList(
   outfield.forEach((p, idx) => {
     lines.push(`${idx + 1}. ${p.name}`);
   });
+
+  if (inviteUrl) {
+    lines.push('');
+    lines.push(`🔗 *Confirmar presença na sala:* ${inviteUrl}`);
+  }
 
   return lines.join('\n');
 }

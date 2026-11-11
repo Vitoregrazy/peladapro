@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { Check, Copy, Download, FileText, Link2, Share2, Upload, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Check, Copy, Download, FileText, Link2, MessageCircle, Share2, Upload, X } from 'lucide-react';
 import { DrawnTeam, MatchRules, Player } from '../types/pelada';
 import { exportWhatsAppList, parseWhatsAppList } from '../utils/peladaLogic';
 import { generateInviteLink } from '../services/appUrl';
+import { openWhatsAppWithText } from '../utils/whatsappShare';
 
 interface WhatsAppModalProps {
   isOpen: boolean;
@@ -13,6 +14,8 @@ interface WhatsAppModalProps {
   onImportPlayers: (newPlayers: Omit<Player, 'id'>[], replaceExisting: boolean) => void;
   onExportPdf?: () => void;
   roomCode?: string;
+  initialTab?: 'import' | 'export';
+  initialExportMode?: 'teams' | 'list' | 'link';
 }
 
 const SAMPLE_WHATSAPP_LIST = `Pelada Society Quarta 21h ⚽️
@@ -49,12 +52,21 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({
   onImportPlayers,
   onExportPdf,
   roomCode = 'SOC-10',
+  initialTab = 'import',
+  initialExportMode = 'teams',
 }) => {
-  const [activeTab, setActiveTab] = useState<'import' | 'export'>('import');
+  const [activeTab, setActiveTab] = useState<'import' | 'export'>(initialTab);
   const [rawText, setRawText] = useState(SAMPLE_WHATSAPP_LIST);
   const [replaceExisting, setReplaceExisting] = useState(true);
-  const [exportMode, setExportMode] = useState<'teams' | 'list' | 'link'>('teams');
+  const [exportMode, setExportMode] = useState<'teams' | 'list' | 'link'>(initialExportMode);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+      setExportMode(initialExportMode);
+    }
+  }, [isOpen, initialTab, initialExportMode]);
 
   if (!isOpen) return null;
 
@@ -68,8 +80,8 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({
     exportMode === 'link'
       ? inviteMessage
       : exportMode === 'teams' && drawnTeams.length > 0
-      ? exportWhatsAppList(players, rules, drawnTeams)
-      : exportWhatsAppList(players, rules);
+      ? exportWhatsAppList(players, rules, drawnTeams, inviteUrl)
+      : exportWhatsAppList(players, rules, undefined, inviteUrl);
 
   const handleConfirmImport = () => {
     const combined = [...parsedPreview.goalkeepers, ...parsedPreview.linePlayers];
@@ -262,31 +274,31 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({
             />
 
             <div className="flex flex-wrap items-center justify-end gap-2.5">
-              {navigator.share && exportMode === 'link' && (
+              {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
                 <button
                   type="button"
                   onClick={async () => {
                     try {
                       await navigator.share({
-                        title: `PeladaPro — Lista de Presença (${roomCode})`,
-                        text: inviteMessage,
-                        url: inviteUrl,
+                        title: `PeladaPro — ${roomCode}`,
+                        text: exportedText,
+                        ...(exportMode === 'link' ? { url: inviteUrl } : {}),
                       });
                     } catch {
-                      // Handled by copy button
+                      // Handled by copy/WhatsApp buttons
                     }
                   }}
-                  className="px-4 py-2.5 text-xs font-bold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-xl transition-all flex items-center gap-2 whitespace-nowrap shrink-0"
+                  className="px-3.5 py-2.5 text-xs font-bold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-all flex items-center gap-2 whitespace-nowrap shrink-0"
                 >
-                  <Share2 className="w-4 h-4" />
-                  Enviar no Grupo
+                  <Share2 className="w-4 h-4 text-emerald-400" />
+                  Compartilhar
                 </button>
               )}
               {onExportPdf && exportMode !== 'link' && (
                 <button
                   type="button"
                   onClick={onExportPdf}
-                  className="px-4 py-2.5 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
+                  className="px-3.5 py-2.5 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
                 >
                   <Download className="w-4 h-4 text-emerald-400" />
                   Baixar PDF
@@ -295,19 +307,31 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({
               <button
                 type="button"
                 onClick={handleCopyExport}
-                className="px-5 py-2.5 text-xs font-black text-slate-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition-all shadow-md flex items-center gap-2 whitespace-nowrap shrink-0 active:scale-95"
+                className="px-4 py-2.5 text-xs font-bold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-all flex items-center gap-2 whitespace-nowrap shrink-0 active:scale-95"
               >
                 {copied ? (
                   <>
-                    <Check className="w-4 h-4" />
-                    Copiado para o WhatsApp!
+                    <Check className="w-4 h-4 text-emerald-400" />
+                    Copiado!
                   </>
                 ) : (
                   <>
-                    <Copy className="w-4 h-4" />
-                    Copiar para o WhatsApp
+                    <Copy className="w-4 h-4 text-slate-300" />
+                    Copiar Texto
                   </>
                 )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void openWhatsAppWithText(exportedText);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                className="px-5 py-2.5 text-xs font-black text-slate-950 bg-[#25D366] hover:bg-[#20bd5a] rounded-xl transition-all shadow-md shadow-[#25D366]/20 flex items-center gap-2 whitespace-nowrap shrink-0 active:scale-95"
+              >
+                <MessageCircle className="w-4 h-4" />
+                Enviar no WhatsApp
               </button>
             </div>
           </div>

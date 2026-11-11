@@ -4,12 +4,14 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  Copy,
   Crown,
   DollarSign,
   Download,
   EyeOff,
   FileSpreadsheet,
   KeyRound,
+  MessageCircle,
   Play,
   Plus,
   Search,
@@ -42,6 +44,7 @@ import {
   DEFAULT_RULES,
   drawTeams,
   evaluateMatchStatus,
+  exportWhatsAppList,
   INITIAL_PLAYERS,
   isArianIdentity,
   isHostByName,
@@ -52,6 +55,13 @@ import {
   resolveMuriloVipStatus,
   rotateKingOfTheCourt,
 } from './utils/peladaLogic';
+import {
+  createDefaultCoinToss,
+  createDefaultLiveMatch,
+  hasDuplicatePlayer,
+  normalizeRoomState,
+} from './utils/roomState';
+import { openWhatsAppWithText } from './utils/whatsappShare';
 import { exportPeladaPdf } from './utils/pdfExport';
 import { TacticalPitchCard } from './components/TacticalPitchCard';
 import { WhatsAppModal } from './components/WhatsAppModal';
@@ -69,9 +79,7 @@ import { buildApiUrl, generateInviteLink } from './services/appUrl';
 import { getLicenseStatus, LicenseStatus } from './services/licenseService';
 import {
   isSoundEnabled,
-  playCoinSound,
   playWhistleMatchEnd,
-  playWhistleShort,
   setSoundEnabled,
 } from './services/soundEffects';
 import { otaService } from './services/otaService';
@@ -95,15 +103,21 @@ interface HydratedState {
   players: Player[];
   drawnTeams: DrawnTeam[];
   rules: MatchRules;
+  championship: Championship | null;
+  roomCode: string;
   updatedAt: number;
 }
 
-function loadInitialState(): HydratedState {
+function loadInitialState(urlRoomCode?: string | null): HydratedState {
+  const requestedRoom = urlRoomCode ? urlRoomCode.toUpperCase().trim() : null;
+
   if (typeof window === 'undefined') {
     return {
       players: INITIAL_PLAYERS,
       drawnTeams: [],
       rules: DEFAULT_RULES,
+      championship: null,
+      roomCode: requestedRoom || 'SOC-10',
       updatedAt: 0,
     };
   }
@@ -112,6 +126,20 @@ function loadInitialState(): HydratedState {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      const savedRoomCode = String(parsed.roomCode || 'SOC-10').toUpperCase().trim();
+
+      // Se abriu um link de outra sala diferente da salva localmente, não mistura estados
+      if (requestedRoom && requestedRoom !== savedRoomCode) {
+        return {
+          players: [],
+          drawnTeams: [],
+          rules: DEFAULT_RULES,
+          championship: null,
+          roomCode: requestedRoom,
+          updatedAt: 0,
+        };
+      }
+
       const loadedPlayers = sanitizePlayersHostFlag(
         Array.isArray(parsed.players) ? parsed.players : []
       );
@@ -124,7 +152,9 @@ function loadInitialState(): HydratedState {
         players: loadedPlayers,
         drawnTeams: loadedTeams,
         rules: parsed.rules || DEFAULT_RULES,
-        updatedAt: Number(parsed.updatedAt || Date.now()),
+        championship: parsed.championship ?? null,
+        roomCode: requestedRoom || savedRoomCode || 'SOC-10',
+        updatedAt: Number(parsed.updatedAt || 0),
       };
     }
   } catch (err) {
@@ -132,15 +162,21 @@ function loadInitialState(): HydratedState {
   }
 
   return {
-    players: INITIAL_PLAYERS,
+    players: requestedRoom ? [] : INITIAL_PLAYERS,
     drawnTeams: [],
     rules: DEFAULT_RULES,
-    updatedAt: Date.now(),
+    championship: null,
+    roomCode: requestedRoom || 'SOC-10',
+    updatedAt: 0,
   };
 }
 
 export default function App() {
-  const initialHydrated = useMemo(() => loadInitialState(), []);
+  const initialUrlRoom =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('room')
+      : null;
+  const initialHydrated = useMemo(() => loadInitialState(initialUrlRoom), [initialUrlRoom]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('draw');
   const [drawSubTab, setDrawSubTab] = useState<DrawSubTab>('players');
   const [players, setPlayers] = useState<Player[]>(initialHydrated.players);
@@ -161,6 +197,7 @@ export default function App() {
   const [isPixModalOpen, setIsPixModalOpen] = useState(false);
   const [isFifaCardOpen, setIsFifaCardOpen] = useState(false);
   const [selectedFifaPlayer, setSelectedFifaPlayer] = useState<Player | null>(null);
+  const [selectedFifaGoals, setSelectedFifaGoals] = useState<number>(0);
   const [soundActive, setSoundActive] = useState<boolean>(() => isSoundEnabled());
 
   // Discreet Rigging ("Modo Panela Invisível")
@@ -168,7 +205,7 @@ export default function App() {
     try {
       const saved = localStorage.getItem('pelada_rigging_config');
       if (saved) return JSON.parse(saved);
-    } catch {}
+    } catch { }
     return {
       enabled: false,
       mode: 'top_stars',
@@ -185,11 +222,23 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem('pelada_rigging_config', JSON.stringify(rigging));
-    } catch {}
+    } catch { }
   }, [rigging]);
 
   // Double-tap tracker for discreet VIP player toggles (Arian / Murilo)
   const lastPlayerTapRef = useRef<{ [playerId: string]: number }>({});
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const togglePlayerPresence = (player: Player) => {
+    const next = players.map((p) =>
+      p.id === player.id ? { ...p, confirmed: !p.confirmed } : p
+    );
+    setPlayers(next);
+    broadcastSync(
+      { players: next },
+      `${player.name} ${!player.confirmed ? 'confirmou presença' : 'saiu da lista'}`
+    );
+  };
 
   const updateRiggingAndRedraw = (
     updater: RiggingConfig | ((prev: RiggingConfig) => RiggingConfig)
@@ -209,7 +258,11 @@ export default function App() {
     const now = Date.now();
     const lastTap = lastPlayerTapRef.current[player.id] || 0;
 
-    if (now - lastTap < 500) {
+    if (now - lastTap < 360) {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
       lastPlayerTapRef.current[player.id] = 0;
 
       if (isArianIdentity(player)) {
@@ -220,7 +273,7 @@ export default function App() {
         }));
         try {
           navigator.vibrate?.(45);
-        } catch {}
+        } catch { }
         return;
       }
 
@@ -231,11 +284,18 @@ export default function App() {
         }));
         try {
           navigator.vibrate?.(45);
-        } catch {}
+        } catch { }
         return;
       }
     } else {
       lastPlayerTapRef.current[player.id] = now;
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+      }
+      singleTapTimerRef.current = setTimeout(() => {
+        singleTapTimerRef.current = null;
+        togglePlayerPresence(player);
+      }, 360);
     }
   };
 
@@ -248,50 +308,36 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTeamView, setSelectedTeamView] = useState<'all' | number>('all');
 
-  // WhatsApp Modal & PDF Export Feedback
+  // WhatsApp Modal & Export Feedback
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
+  const [whatsAppModalTab, setWhatsAppModalTab] = useState<'import' | 'export'>('import');
+  const [whatsAppExportMode, setWhatsAppExportMode] = useState<'teams' | 'list' | 'link'>('teams');
   const [pdfExported, setPdfExported] = useState(false);
+  const [teamsWhatsAppFeedback, setTeamsWhatsAppFeedback] = useState<'whatsapp' | 'copied' | null>(null);
 
   // Coin Toss State
-  const [coinToss, setCoinToss] = useState<CoinTossState>({
-    result: null,
-    callerTeamId: 'team-1',
-    callerChoice: 'cara',
-    winnerTeamId: null,
-    ballTeamId: null,
-    fieldSideTeamA: 'Lado Norte (Esquerdo)',
-    fieldSideTeamB: 'Lado Sul (Direito)',
-    flippedAt: null,
-  });
+  const [coinToss, setCoinToss] = useState<CoinTossState>(() =>
+    createDefaultCoinToss(initialHydrated.drawnTeams[0]?.id || 'team-1')
+  );
 
   // Live Match Timer & Scoreboard State
-  const [liveMatch, setLiveMatch] = useState<LiveMatchState>({
-    isRunning: false,
-    remainingSeconds: DEFAULT_RULES.durationMinutes * 60,
-    configuredMinutes: DEFAULT_RULES.durationMinutes,
-    addedStoppageMinutes: 0,
-    scoreA: 0,
-    scoreB: 0,
-    teamAId: 'team-1',
-    teamBId: 'team-2',
-    events: [],
-    winnerTeamId: null,
-    endedReason: null,
-  });
+  const [liveMatch, setLiveMatch] = useState<LiveMatchState>(() =>
+    createDefaultLiveMatch(
+      initialHydrated.rules.durationMinutes,
+      initialHydrated.drawnTeams[0]?.id || 'team-1',
+      initialHydrated.drawnTeams[1]?.id || 'team-2'
+    )
+  );
 
   // Championship State
-  const [championship, setChampionship] = useState<Championship | null>(() =>
-    createChampionshipFromTeams('Copa Society dos Amigos', 'pontos_corridos', drawnTeams)
+  const [championship, setChampionship] = useState<Championship | null>(
+    () =>
+      initialHydrated.championship ||
+      createChampionshipFromTeams('Copa Society dos Amigos', 'pontos_corridos', drawnTeams)
   );
 
   // Real-Time WebSocket Room State
-  const initialUrlRoom =
-    typeof window !== 'undefined'
-      ? new URLSearchParams(window.location.search).get('room')
-      : null;
-  const [roomCode, setRoomCode] = useState<string>(
-    initialUrlRoom ? initialUrlRoom.toUpperCase() : 'SOC-10'
-  );
+  const [roomCode, setRoomCode] = useState<string>(initialHydrated.roomCode);
   const [userName, setUserName] = useState<string>('Vitor (Organizador)');
   const [isWsConnected, setIsWsConnected] = useState(false);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
@@ -321,34 +367,28 @@ export default function App() {
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
     const applyRemoteRoom = (r: RoomState) => {
+      const clean = normalizeRoomState(r);
       isApplyingRemoteRef.current = true;
-      stateUpdatedAtRef.current = Number(r.updatedAt || Date.now());
-      setRoomState(r);
+      stateUpdatedAtRef.current = Number(clean.updatedAt || Date.now());
+      setRoomState(clean);
 
-      const nextPlayers = sanitizePlayersHostFlag(
-        Array.isArray(r.players) ? r.players : []
-      );
-      const nextTeams =
-        nextPlayers.length >= 2 && Array.isArray(r.drawnTeams)
-          ? r.drawnTeams
-          : [];
-
-      setPlayers(nextPlayers);
-      if (r.rules) setRules(r.rules as MatchRules);
-      setDrawnTeams(nextTeams);
-      setCoinToss(r.coinToss as CoinTossState);
-      setLiveMatch(r.liveMatch as LiveMatchState);
-      if (r.championship) setChampionship(r.championship as Championship);
+      setPlayers(clean.players);
+      setRules(clean.rules);
+      setDrawnTeams(clean.drawnTeams);
+      setCoinToss(clean.coinToss);
+      setLiveMatch(clean.liveMatch);
+      setChampionship(clean.championship);
 
       try {
         localStorage.setItem(
           LOCAL_STORAGE_KEY,
           JSON.stringify({
-            players: nextPlayers,
-            drawnTeams: nextTeams,
-            rules: r.rules || rules,
-            updatedAt: r.updatedAt || Date.now(),
-            roomCode,
+            players: clean.players,
+            drawnTeams: clean.drawnTeams,
+            rules: clean.rules,
+            championship: clean.championship,
+            updatedAt: clean.updatedAt || Date.now(),
+            roomCode: clean.code || roomCode,
           })
         );
       } catch {
@@ -375,13 +415,15 @@ export default function App() {
 
           const serverUpdated = Number(serverRoom.updatedAt || 0);
 
-          // Se o container sofreu Cold-Start (isServerSeed: true ou server.updatedAt < local)
+          // Só re-hidrata seed vazio do servidor se este dispositivo tiver estado salvo real (updatedAt > 0)
           if (
-            (serverRoom as any).isServerSeed ||
+            serverRoom.isServerSeed ||
             (stateUpdatedAtRef.current > 0 && serverUpdated < stateUpdatedAtRef.current)
           ) {
-            if (stateUpdatedAtRef.current > 0) {
-              // Re-hidrata o servidor com nosso estado local mais recente
+            if (
+              stateUpdatedAtRef.current > 0 &&
+              latestLocalStateRef.current.players.length > 0
+            ) {
               void fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -391,6 +433,8 @@ export default function App() {
                   updatedAt: stateUpdatedAtRef.current,
                 }),
               });
+            } else if (!serverRoom.isServerSeed && serverRoom.players.length > 0) {
+              applyRemoteRoom(serverRoom);
             }
             return;
           }
@@ -408,6 +452,13 @@ export default function App() {
     pollFallback();
     pollTimer = setInterval(pollFallback, 6000);
 
+    const handleVisibilityRefresh = () => {
+      if (document.visibilityState === 'visible') {
+        pollFallback();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityRefresh);
+
     const connect = () => {
       // WebSocket só existe no servidor local (server.ts). No APK (localhost do Capacitor)
       // e na Vercel não há endpoint WS: usamos apenas o sync HTTP para não gerar reconexões infinitas.
@@ -415,7 +466,7 @@ export default function App() {
       if (Capacitor.isNativePlatform() || host.endsWith('vercel.app')) return;
       try {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${host}/api/live-room`;
+        const wsUrl = `${protocol}//${host}/ws`;
 
         socket = new WebSocket(wsUrl);
         wsRef.current = socket;
@@ -457,6 +508,7 @@ export default function App() {
     connect();
 
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityRefresh);
       if (pollTimer) clearInterval(pollTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) {
@@ -507,8 +559,8 @@ export default function App() {
       syncPlayers.length < 2
         ? []
         : partial.drawnTeams !== undefined
-        ? partial.drawnTeams
-        : drawnTeams;
+          ? partial.drawnTeams
+          : drawnTeams;
 
     const syncPayload = {
       players: syncPlayers,
@@ -603,13 +655,33 @@ export default function App() {
     );
   };
 
-  // Match Countdown Interval
+  // Match Countdown Interval (baseado em relógio real + Screen Wake Lock)
   useEffect(() => {
     if (!liveMatch.isRunning) return;
+
+    let wakeLockSentinel: { release?: () => Promise<void> } | null = null;
+    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+      void (navigator as unknown as { wakeLock?: { request: (type: string) => Promise<any> } })
+        .wakeLock?.request('screen')
+        .then((sentinel) => {
+          wakeLockSentinel = sentinel;
+        })
+        .catch(() => {
+          // dispositivo sem suporte ou permissão
+        });
+    }
+
     const interval = setInterval(() => {
       setLiveMatch((prev) => {
         if (!prev.isRunning) return prev;
-        const nextSec = Math.max(0, prev.remainingSeconds - 1);
+        const nextSec = prev.timerStartedAt
+          ? Math.max(
+            0,
+            (prev.remainingAtStart ?? prev.remainingSeconds) -
+            Math.floor((Date.now() - prev.timerStartedAt) / 1000)
+          )
+          : Math.max(0, prev.remainingSeconds - 1);
+
         const evalStatus = evaluateMatchStatus(
           prev.scoreA,
           prev.scoreB,
@@ -623,11 +695,13 @@ export default function App() {
             evalStatus.winner === 'A'
               ? prev.teamAId
               : evalStatus.winner === 'B'
-              ? prev.teamBId
-              : null;
+                ? prev.teamBId
+                : null;
           return {
             ...prev,
             remainingSeconds: nextSec,
+            remainingAtStart: nextSec,
+            timerStartedAt: null,
             isRunning: false,
             winnerTeamId,
             endedReason: evalStatus.reason,
@@ -638,30 +712,28 @@ export default function App() {
           remainingSeconds: nextSec,
         };
       });
-    }, 1000);
+    }, 500);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (wakeLockSentinel?.release) {
+        void wakeLockSentinel.release().catch(() => { });
+      }
+    };
   }, [liveMatch.isRunning, rules.goalLimit]);
 
-  // Handlers
-  const handleExecuteDraw = () => {
-    const nextTeams = drawTeams(players, rules, rigging);
+  const applyNewDraw = (
+    nextTeams: DrawnTeam[],
+    nextPlayers: Player[],
+    activityText: string
+  ) => {
     setDrawnTeams(nextTeams);
 
-    const nextMatch: LiveMatchState = {
-      ...liveMatch,
-      isRunning: false,
-      remainingSeconds: rules.durationMinutes * 60,
-      configuredMinutes: rules.durationMinutes,
-      addedStoppageMinutes: 0,
-      scoreA: 0,
-      scoreB: 0,
-      teamAId: nextTeams[0]?.id || 'team-1',
-      teamBId: nextTeams[1]?.id || 'team-2',
-      events: [],
-      winnerTeamId: null,
-      endedReason: null,
-    };
+    const nextMatch: LiveMatchState = createDefaultLiveMatch(
+      rules.durationMinutes,
+      nextTeams[0]?.id || 'team-1',
+      nextTeams[1]?.id || 'team-2'
+    );
     setLiveMatch(nextMatch);
 
     const nextChamp = createChampionshipFromTeams(
@@ -673,16 +745,26 @@ export default function App() {
 
     setShowDiscreetPanel(false);
     setSelectedTeamView('all');
-    // Auto-navigate user directly to the "Times Sorteados" sub-tab with smooth scroll
     setDrawSubTab('teams');
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     broadcastSync(
       {
+        players: nextPlayers,
         drawnTeams: nextTeams,
         liveMatch: nextMatch,
         championship: nextChamp,
       },
+      activityText
+    );
+  };
+
+  // Handlers
+  const handleExecuteDraw = () => {
+    const nextTeams = drawTeams(players, rules, rigging);
+    applyNewDraw(
+      nextTeams,
+      players,
       `Novo sorteio realizado (${rules.linePlayersPerTeam}+${rules.goalkeepersPerTeam})`
     );
   };
@@ -694,11 +776,12 @@ export default function App() {
 
     setRules(nextRules);
 
-    const updatedTeams = formationChanged
-      ? drawTeams(players, nextRules, rigging)
-      : drawnTeams;
+    const updatedTeams =
+      formationChanged && drawnTeams.length > 0
+        ? drawTeams(players, nextRules, rigging)
+        : drawnTeams;
 
-    if (formationChanged) {
+    if (formationChanged && drawnTeams.length > 0) {
       setDrawnTeams(updatedTeams);
     }
 
@@ -707,6 +790,9 @@ export default function App() {
       configuredMinutes: nextRules.durationMinutes,
       remainingSeconds: liveMatch.isRunning
         ? liveMatch.remainingSeconds
+        : nextRules.durationMinutes * 60,
+      remainingAtStart: liveMatch.isRunning
+        ? liveMatch.remainingAtStart
         : nextRules.durationMinutes * 60,
       teamAId: updatedTeams[0]?.id || 'team-1',
       teamBId: updatedTeams[1]?.id || 'team-2',
@@ -754,47 +840,56 @@ export default function App() {
     );
     setPlayers(nextPlayers);
     const nextTeams = drawTeams(nextPlayers, rules, rigging);
-    setDrawnTeams(nextTeams);
-    setDrawSubTab('teams');
-    broadcastSync(
-      { players: nextPlayers, drawnTeams: nextTeams },
+    applyNewDraw(
+      nextTeams,
+      nextPlayers,
       `Lista do WhatsApp importada (${withIds.length} atletas)`
     );
   };
 
   const handleGuestAddPlayer = async (newPlayer: Player) => {
+    lastUserMutationAtRef.current = Date.now();
+    const sanitizedNew = sanitizePlayersHostFlag([newPlayer])[0];
     setPlayers((prev) => {
-      if (prev.some((p) => p.id === newPlayer.id || p.name.toLowerCase().trim() === newPlayer.name.toLowerCase().trim())) {
+      if (hasDuplicatePlayer(prev, sanitizedNew)) {
         return prev;
       }
-      return [...prev, newPlayer];
+      return sanitizePlayersHostFlag([...prev, sanitizedNew]);
     });
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
           type: 'room:add_player',
-          player: newPlayer,
+          player: sanitizedNew,
         })
       );
     }
 
     try {
-      await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
+      const res = await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           roomCode,
           action: 'add_player',
-          player: newPlayer,
+          player: sanitizedNew,
         }),
       });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.room) {
+          stateUpdatedAtRef.current = Number(data.room.updatedAt || Date.now());
+          setRoomState(data.room);
+        }
+      }
     } catch (err) {
       console.error('Falha ao sincronizar novo jogador na nuvem:', err);
     }
   };
 
   const handleGuestTogglePresence = async (playerId: string) => {
+    lastUserMutationAtRef.current = Date.now();
     setPlayers((prev) =>
       prev.map((p) => (p.id === playerId ? { ...p, confirmed: !p.confirmed } : p))
     );
@@ -809,7 +904,7 @@ export default function App() {
     }
 
     try {
-      await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
+      const res = await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -818,6 +913,13 @@ export default function App() {
           playerId,
         }),
       });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.room) {
+          stateUpdatedAtRef.current = Number(data.room.updatedAt || Date.now());
+          setRoomState(data.room);
+        }
+      }
     } catch (err) {
       console.error('Falha ao alternar presença na nuvem:', err);
     }
@@ -874,19 +976,11 @@ export default function App() {
   const handleRotateWinnerStays = (winner: 'A' | 'B' | 'draw') => {
     const rotated = rotateKingOfTheCourt(drawnTeams, winner);
     setDrawnTeams(rotated);
-    const nextMatch: LiveMatchState = {
-      ...liveMatch,
-      isRunning: false,
-      remainingSeconds: rules.durationMinutes * 60,
-      addedStoppageMinutes: 0,
-      scoreA: 0,
-      scoreB: 0,
-      teamAId: rotated[0]?.id || 'team-1',
-      teamBId: rotated[1]?.id || 'team-2',
-      events: [],
-      winnerTeamId: null,
-      endedReason: null,
-    };
+    const nextMatch: LiveMatchState = createDefaultLiveMatch(
+      rules.durationMinutes,
+      rotated[0]?.id || 'team-1',
+      rotated[1]?.id || 'team-2'
+    );
     setLiveMatch(nextMatch);
     broadcastSync(
       { drawnTeams: rotated, liveMatch: nextMatch },
@@ -962,8 +1056,8 @@ export default function App() {
     selectedTeamView === 'all'
       ? drawnTeams
       : drawnTeams[selectedTeamView]
-      ? [drawnTeams[selectedTeamView]]
-      : drawnTeams;
+        ? [drawnTeams[selectedTeamView]]
+        : drawnTeams;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-24 md:pb-12">
@@ -997,13 +1091,12 @@ export default function App() {
               setVipSecretOpenOnBoot(false);
               setIsVipModalOpen(true);
             }}
-            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all active:scale-90 ${
-              license.isVip
+            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all active:scale-90 ${license.isVip
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
                 : license.isTrialActive
-                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'
-            }`}
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'
+              }`}
           >
             {license.isVip ? '⭐ VIP' : license.isTrialActive ? `⏱️ ${license.daysRemaining}d` : '🔒 Expirado'}
           </button>
@@ -1017,44 +1110,40 @@ export default function App() {
           <button
             type="button"
             onClick={() => setActiveTab('draw')}
-            className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeTab === 'draw'
+            className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${activeTab === 'draw'
                 ? 'text-emerald-400 border-emerald-400'
                 : 'border-transparent'
-            }`}
+              }`}
           >
             Sorteio & Elenco
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('match')}
-            className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeTab === 'match'
+            className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${activeTab === 'match'
                 ? 'text-emerald-400 border-emerald-400'
                 : 'border-transparent'
-            }`}
+              }`}
           >
             Juiz, Moeda & Tempo
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('tournament')}
-            className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeTab === 'tournament'
+            className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${activeTab === 'tournament'
                 ? 'text-emerald-400 border-emerald-400'
                 : 'border-transparent'
-            }`}
+              }`}
           >
             Campeonatos
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('live')}
-            className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeTab === 'live'
+            className={`hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${activeTab === 'live'
                 ? 'text-emerald-400 border-emerald-400'
                 : 'border-transparent'
-            }`}
+              }`}
           >
             Sala Ao Vivo ({roomCode})
           </button>
@@ -1090,7 +1179,11 @@ export default function App() {
           {/* WhatsApp Button */}
           <button
             type="button"
-            onClick={() => setIsWhatsAppOpen(true)}
+            onClick={() => {
+              setWhatsAppModalTab('import');
+              setWhatsAppExportMode('teams');
+              setIsWhatsAppOpen(true);
+            }}
             className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition-all active:scale-95 whitespace-nowrap shrink-0 flex items-center gap-1.5 shadow-md shadow-emerald-500/20"
           >
             <FileSpreadsheet className="w-3.5 h-3.5" />
@@ -1164,11 +1257,10 @@ export default function App() {
                             arianRotationMode: 'manual',
                           }))
                         }
-                        className={`text-[10px] font-black px-2 py-0.5 rounded transition-colors ${
-                          resolveArianVipStatus(rigging)
+                        className={`text-[10px] font-black px-2 py-0.5 rounded transition-colors ${resolveArianVipStatus(rigging)
                             ? 'bg-emerald-500 text-slate-950'
                             : 'bg-slate-800 text-slate-400'
-                        }`}
+                          }`}
                       >
                         {resolveArianVipStatus(rigging) ? 'Panela .' : 'Outro Time'}
                       </button>
@@ -1182,11 +1274,10 @@ export default function App() {
                             includeMuriloVip: !resolveMuriloVipStatus(prev),
                           }))
                         }
-                        className={`text-[10px] font-black px-2 py-0.5 rounded transition-colors ${
-                          resolveMuriloVipStatus(rigging)
+                        className={`text-[10px] font-black px-2 py-0.5 rounded transition-colors ${resolveMuriloVipStatus(rigging)
                             ? 'bg-emerald-500 text-slate-950'
                             : 'bg-slate-800 text-slate-400'
-                        }`}
+                          }`}
                       >
                         {resolveMuriloVipStatus(rigging) ? 'Panela .' : 'Outro Time'}
                       </button>
@@ -1212,11 +1303,10 @@ export default function App() {
                       onClick={() =>
                         setRigging((prev) => ({ ...prev, enabled: !prev.enabled }))
                       }
-                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 ${
-                        rigging.enabled
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 ${rigging.enabled
                           ? 'bg-amber-400 text-slate-950'
                           : 'bg-slate-950 text-slate-300 border border-slate-800'
-                      }`}
+                        }`}
                     >
                       {rigging.enabled
                         ? 'Modo Panela: ATIVADO (Invisível)'
@@ -1265,11 +1355,10 @@ export default function App() {
                             mode: 'top_stars',
                           }))
                         }
-                        className={`w-full text-left px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${
-                          rigging.enabled && rigging.mode === 'top_stars'
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${rigging.enabled && rigging.mode === 'top_stars'
                             ? 'bg-amber-500/15 border-amber-400 text-amber-300'
                             : 'bg-slate-900 border-slate-800 text-slate-300'
-                        }`}
+                          }`}
                       >
                         Craques 5★ + Melhor Goleiro
                       </button>
@@ -1282,11 +1371,10 @@ export default function App() {
                             mode: 'handpicked',
                           }))
                         }
-                        className={`w-full text-left px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${
-                          rigging.enabled && rigging.mode === 'handpicked'
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${rigging.enabled && rigging.mode === 'handpicked'
                             ? 'bg-amber-500/15 border-amber-400 text-amber-300'
                             : 'bg-slate-900 border-slate-800 text-slate-300'
-                        }`}
+                          }`}
                       >
                         Parceiros Fixos Escolhidos Manualmente
                       </button>
@@ -1308,11 +1396,10 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={() => handleTogglePinTeammate(p.id)}
-                                className={`px-2 py-1 text-xs ${
-                                  isPinned
+                                className={`px-2 py-1 text-xs ${isPinned
                                     ? 'bg-emerald-950 text-emerald-300 font-bold'
                                     : 'text-slate-400 hover:text-slate-200'
-                                }`}
+                                  }`}
                               >
                                 {isPinned ? '✓ ' : '+ '}
                                 {p.name.split(' ')[0]}
@@ -1321,11 +1408,10 @@ export default function App() {
                                 type="button"
                                 onClick={() => handleToggleExcludeRival(p.id)}
                                 aria-label={`Evitar ${p.name}`}
-                                className={`px-1.5 py-1 text-xs border-l border-slate-800 ${
-                                  isExcluded
+                                className={`px-1.5 py-1 text-xs border-l border-slate-800 ${isExcluded
                                     ? 'bg-red-950 text-red-300 font-black'
                                     : 'text-slate-500 hover:text-red-400'
-                                }`}
+                                  }`}
                               >
                                 ✕
                               </button>
@@ -1425,11 +1511,10 @@ export default function App() {
                         key={f.id}
                         type="button"
                         onClick={() => setRosterFilter(f.id as any)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${
-                          rosterFilter === f.id
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${rosterFilter === f.id
                             ? 'bg-slate-200 text-slate-950 shadow'
                             : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-slate-200'
-                        }`}
+                          }`}
                       >
                         {f.label}
                       </button>
@@ -1444,26 +1529,20 @@ export default function App() {
                     return (
                       <div
                         key={player.id}
-                        className={`flex items-center justify-between p-3 rounded-2xl border transition-all ${
-                          player.confirmed
+                        className={`flex items-center justify-between p-3 rounded-2xl border transition-all ${player.confirmed
                             ? 'bg-slate-900/95 border-emerald-500/40 shadow-sm'
                             : 'bg-slate-950/60 border-slate-800/70 opacity-60'
-                        }`}
+                          }`}
                       >
                         {/* Tap to Toggle Presence */}
                         <button
                           type="button"
                           onClick={() => {
-                            const next = players.map((p) =>
-                              p.id === player.id ? { ...p, confirmed: !p.confirmed } : p
-                            );
-                            setPlayers(next);
-                            broadcastSync(
-                              { players: next },
-                              `${player.name} ${
-                                !player.confirmed ? 'confirmou presença' : 'saiu da lista'
-                              }`
-                            );
+                            if (isArianIdentity(player) || isMuriloIdentity(player)) {
+                              handlePlayerNameTap(player);
+                              return;
+                            }
+                            togglePlayerPresence(player);
                           }}
                           className="flex items-center gap-3 flex-1 text-left min-w-0 py-1"
                         >
@@ -1476,12 +1555,6 @@ export default function App() {
                           <div className="truncate">
                             <div className="flex items-center gap-1.5">
                               <span
-                                onClick={(e) => {
-                                  if (isArianIdentity(player) || isMuriloIdentity(player)) {
-                                    e.stopPropagation();
-                                    handlePlayerNameTap(player);
-                                  }
-                                }}
                                 className="font-bold text-xs sm:text-sm text-white truncate cursor-pointer select-none py-0.5 pr-1"
                                 title={player.name}
                               >
@@ -1496,11 +1569,10 @@ export default function App() {
                                 />
                               )}
                               <span
-                                className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase shrink-0 ${
-                                  isGK
+                                className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase shrink-0 ${isGK
                                     ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                     : 'bg-slate-800 text-slate-300'
-                                }`}
+                                  }`}
                               >
                                 {isGK ? 'GOL' : 'LIN'}
                               </span>
@@ -1523,11 +1595,10 @@ export default function App() {
                                   title={`${star} estrelas`}
                                 >
                                   <Star
-                                    className={`w-3.5 h-3.5 ${
-                                      star <= player.rating
+                                    className={`w-3.5 h-3.5 ${star <= player.rating
                                         ? 'text-amber-400 fill-amber-400'
                                         : 'text-slate-700'
-                                    }`}
+                                      }`}
                                   />
                                 </span>
                               ))}
@@ -1645,55 +1716,115 @@ export default function App() {
                 ) : (
                   <>
                     {/* Top Action Bar */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 border border-slate-800 p-3 rounded-2xl">
+                    <div className="bg-slate-900 border border-slate-800 p-3 rounded-2xl space-y-2.5">
+                      {/* Primary CTA Row: 1-Tap Send Drawn Teams to WhatsApp */}
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={handleExecuteDraw}
-                          className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs rounded-xl flex items-center gap-1.5 transition-all active:scale-95 shadow-md shadow-emerald-500/20"
+                          data-testid="send-teams-whatsapp-btn"
+                          onClick={() => {
+                            const inviteUrl = generateInviteLink(roomCode);
+                            const text = exportWhatsAppList(players, rules, drawnTeams, inviteUrl);
+                            void openWhatsAppWithText(text, 'PeladaPro — Times Sorteados');
+                            setTeamsWhatsAppFeedback('whatsapp');
+                            setTimeout(() => setTeamsWhatsAppFeedback(null), 2500);
+                          }}
+                          className="flex-1 px-4 py-2.5 bg-[#25D366] hover:bg-[#20bd5a] text-slate-950 font-black text-xs sm:text-sm rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg shadow-[#25D366]/20"
                         >
-                          <Shuffle className="w-4 h-4" />
-                          <span>Refazer Sorteio</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          data-testid="export-pdf-main-btn"
-                          onClick={handleExportPdf}
-                          className="px-3 py-2 bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95"
-                        >
-                          {pdfExported ? (
+                          {teamsWhatsAppFeedback === 'whatsapp' ? (
                             <>
-                              <Check className="w-3.5 h-3.5 text-emerald-400" />
-                              <span>PDF Gerado!</span>
+                              <Check className="w-4 h-4 stroke-[2.5px]" />
+                              <span>WhatsApp Aberto &amp; Lista Copiada!</span>
                             </>
                           ) : (
                             <>
-                              <Download className="w-3.5 h-3.5 text-emerald-400" />
-                              <span>PDF WhatsApp</span>
+                              <MessageCircle className="w-4 h-4 stroke-[2.5px]" />
+                              <span>Enviar Times no WhatsApp</span>
                             </>
                           )}
                         </button>
 
                         <button
                           type="button"
-                          onClick={handleClearDrawnTeams}
-                          className="px-3 py-2 bg-slate-950 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-slate-800 hover:border-red-500/30 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95"
-                          title="Descartar sorteio e limpar times atuais"
+                          onClick={async () => {
+                            const inviteUrl = generateInviteLink(roomCode);
+                            const text = exportWhatsAppList(players, rules, drawnTeams, inviteUrl);
+                            try {
+                              await navigator.clipboard?.writeText(text);
+                            } catch {
+                              // ignore
+                            }
+                            setTeamsWhatsAppFeedback('copied');
+                            setTimeout(() => setTeamsWhatsAppFeedback(null), 2000);
+                          }}
+                          title="Copiar texto dos times sorteados"
+                          className="px-3.5 py-2.5 bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors active:scale-95 shrink-0"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Descartar Sorteio</span>
+                          {teamsWhatsAppFeedback === 'copied' ? (
+                            <>
+                              <Check className="w-4 h-4 text-emerald-400" />
+                              <span className="hidden sm:inline">Copiado!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-4 h-4 text-emerald-400" />
+                              <span className="hidden sm:inline">Copiar</span>
+                            </>
+                          )}
                         </button>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('match')}
-                        className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95 border border-slate-700"
-                      >
-                        <Play className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Ir para o Juiz & Moeda</span>
-                      </button>
+                      {/* Secondary Controls Row */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleExecuteDraw}
+                            className="px-3 py-2 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-black text-xs rounded-xl flex items-center gap-1.5 transition-all active:scale-95"
+                          >
+                            <Shuffle className="w-3.5 h-3.5" />
+                            <span>Refazer Sorteio</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            data-testid="export-pdf-main-btn"
+                            onClick={handleExportPdf}
+                            className="px-3 py-2 bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95"
+                          >
+                            {pdfExported ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>PDF Gerado!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Download className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>Baixar PDF</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleClearDrawnTeams}
+                            className="px-3 py-2 bg-slate-950 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-slate-800 hover:border-red-500/30 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95"
+                            title="Descartar sorteio e limpar times atuais"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Descartar</span>
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('match')}
+                          className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors whitespace-nowrap active:scale-95 border border-slate-700"
+                        >
+                          <Play className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Ir para o Juiz</span>
+                        </button>
+                      </div>
                     </div>
 
                     {/* Team Filter Pills: "Ver Todos" or specific "Time 1", "Time 2" */}
@@ -1701,11 +1832,10 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setSelectedTeamView('all')}
-                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition-all ${
-                          selectedTeamView === 'all'
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition-all ${selectedTeamView === 'all'
                             ? 'bg-slate-100 text-slate-950 shadow'
                             : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-slate-200'
-                        }`}
+                          }`}
                       >
                         Ver Todos ({drawnTeams.length})
                       </button>
@@ -1715,11 +1845,10 @@ export default function App() {
                           key={t.id}
                           type="button"
                           onClick={() => setSelectedTeamView(idx)}
-                          className={`px-3.5 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition-all flex items-center gap-1.5 ${
-                            selectedTeamView === idx
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-black whitespace-nowrap transition-all flex items-center gap-1.5 ${selectedTeamView === idx
                               ? 'bg-emerald-500 text-slate-950 shadow'
                               : 'bg-slate-900 text-slate-300 border border-slate-800 hover:text-slate-100'
-                          }`}
+                            }`}
                         >
                           <span
                             className="w-2 h-2 rounded-full"
@@ -1795,11 +1924,10 @@ export default function App() {
                                 goalkeepersPerTeam: preset.gk,
                               })
                             }
-                            className={`px-3 py-2.5 text-xs font-bold rounded-xl border transition-all truncate active:scale-95 ${
-                              isSelected
+                            className={`px-3 py-2.5 text-xs font-bold rounded-xl border transition-all truncate active:scale-95 ${isSelected
                                 ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 shadow-sm'
                                 : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
-                            }`}
+                              }`}
                           >
                             {preset.label}
                           </button>
@@ -1959,19 +2087,11 @@ export default function App() {
               );
             }}
             onSendMatchToReferee={(teamAId, teamBId) => {
-              const nextMatch: LiveMatchState = {
-                ...liveMatch,
-                isRunning: false,
-                remainingSeconds: rules.durationMinutes * 60,
-                addedStoppageMinutes: 0,
-                scoreA: 0,
-                scoreB: 0,
+              const nextMatch: LiveMatchState = createDefaultLiveMatch(
+                rules.durationMinutes,
                 teamAId,
-                teamBId,
-                events: [],
-                winnerTeamId: null,
-                endedReason: null,
-              };
+                teamBId
+              );
               setLiveMatch(nextMatch);
               broadcastSync(
                 { liveMatch: nextMatch },
@@ -1981,6 +2101,7 @@ export default function App() {
             }}
             onSelectFifaPlayer={(player, goals) => {
               setSelectedFifaPlayer(player);
+              setSelectedFifaGoals(goals || 0);
               setIsFifaCardOpen(true);
             }}
           />
@@ -2035,9 +2156,8 @@ export default function App() {
           onClick={() => {
             setActiveTab('draw');
           }}
-          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${
-            activeTab === 'draw' ? 'text-emerald-400' : 'text-slate-400'
-          }`}
+          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${activeTab === 'draw' ? 'text-emerald-400' : 'text-slate-400'
+            }`}
         >
           <Shuffle className="w-5 h-5 mb-0.5" />
           <span>Sorteio</span>
@@ -2046,9 +2166,8 @@ export default function App() {
         <button
           type="button"
           onClick={() => setActiveTab('match')}
-          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${
-            activeTab === 'match' ? 'text-emerald-400' : 'text-slate-400'
-          }`}
+          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${activeTab === 'match' ? 'text-emerald-400' : 'text-slate-400'
+            }`}
         >
           <Clock className="w-5 h-5 mb-0.5" />
           <span>Juiz & Tempo</span>
@@ -2057,9 +2176,8 @@ export default function App() {
         <button
           type="button"
           onClick={() => setActiveTab('tournament')}
-          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${
-            activeTab === 'tournament' ? 'text-emerald-400' : 'text-slate-400'
-          }`}
+          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${activeTab === 'tournament' ? 'text-emerald-400' : 'text-slate-400'
+            }`}
         >
           <Trophy className="w-5 h-5 mb-0.5" />
           <span>Campeonato</span>
@@ -2068,9 +2186,8 @@ export default function App() {
         <button
           type="button"
           onClick={() => setActiveTab('live')}
-          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${
-            activeTab === 'live' ? 'text-emerald-400' : 'text-slate-400'
-          }`}
+          className={`flex flex-col items-center justify-center py-1 text-[11px] font-bold active:scale-95 transition-all ${activeTab === 'live' ? 'text-emerald-400' : 'text-slate-400'
+            }`}
         >
           <Wifi className="w-5 h-5 mb-0.5" />
           <span>Ao Vivo</span>
@@ -2118,22 +2235,20 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setNewPlayerIsGk(false)}
-                className={`py-3 rounded-xl font-bold text-xs border transition-colors ${
-                  !newPlayerIsGk
+                className={`py-3 rounded-xl font-bold text-xs border transition-colors ${!newPlayerIsGk
                     ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
                     : 'bg-slate-950 border-slate-800 text-slate-400'
-                }`}
+                  }`}
               >
                 Jogador de Linha
               </button>
               <button
                 type="button"
                 onClick={() => setNewPlayerIsGk(true)}
-                className={`py-3 rounded-xl font-bold text-xs border transition-colors ${
-                  newPlayerIsGk
+                className={`py-3 rounded-xl font-bold text-xs border transition-colors ${newPlayerIsGk
                     ? 'bg-amber-500/20 border-amber-500 text-amber-300'
                     : 'bg-slate-950 border-slate-800 text-slate-400'
-                }`}
+                  }`}
               >
                 Goleiro (GOL)
               </button>
@@ -2152,11 +2267,10 @@ export default function App() {
                     className="p-1.5"
                   >
                     <Star
-                      className={`w-7 h-7 ${
-                        star <= newPlayerRating
+                      className={`w-7 h-7 ${star <= newPlayerRating
                           ? 'text-amber-400 fill-amber-400'
                           : 'text-slate-700'
-                      }`}
+                        }`}
                     />
                   </button>
                 ))}
@@ -2183,6 +2297,8 @@ export default function App() {
         onImportPlayers={handleImportWhatsAppPlayers}
         onExportPdf={handleExportPdf}
         roomCode={roomCode}
+        initialTab={whatsAppModalTab}
+        initialExportMode={whatsAppExportMode}
       />
 
       {/* Guest Check-in Modal (Link direto do WhatsApp) */}
@@ -2222,8 +2338,10 @@ export default function App() {
         onClose={() => {
           setIsFifaCardOpen(false);
           setSelectedFifaPlayer(null);
+          setSelectedFifaGoals(0);
         }}
         player={selectedFifaPlayer}
+        goalsScored={selectedFifaGoals}
       />
     </div>
   );

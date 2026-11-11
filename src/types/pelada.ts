@@ -77,6 +77,8 @@ export interface LiveMatchState {
   events: MatchEvent[];
   winnerTeamId: string | null;
   endedReason: 'goal_limit' | 'time_up' | 'manual' | null;
+  timerStartedAt?: number | null;
+  remainingAtStart?: number;
 }
 
 export interface ChampionshipMatch {
@@ -148,4 +150,5 @@ export interface RoomState {
   participants: ConnectedParticipant[];
   activityFeed: { id: string; text: string; timestamp: number }[];
   updatedAt: number;
+  isServerSeed?: boolean;
 }

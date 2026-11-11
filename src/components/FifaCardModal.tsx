@@ -1,13 +1,153 @@
 import React, { useRef, useState } from 'react';
-import { Award, Download, Share2, Sparkles, Star, Trophy, X } from 'lucide-react';
-import html2canvas from 'html2canvas';
+import { Check, Download, Share2, Sparkles, Star, Trophy, X } from 'lucide-react';
 import { Player } from '../types/pelada';
+import { openWhatsAppWithText } from '../utils/whatsappShare';
 
 interface FifaCardModalProps {
   isOpen: boolean;
   onClose: () => void;
   player: Player | null;
   goalsScored?: number;
+}
+
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function renderFifaCardPng(params: {
+  player: Player;
+  ovr: number;
+  pos: string;
+  stats: { pac: number; dri: number; sho: number; def: number; pas: number; phy: number };
+}): string {
+  const width = 512;
+  const height = 768;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D indisponível');
+
+  // Card Outer Frame & Background Gradient (Hex puro, imune ao oklch do Tailwind v4)
+  drawRoundedRect(ctx, 8, 8, width - 16, height - 16, 48);
+  const bgGrad = ctx.createLinearGradient(0, 0, width, height);
+  bgGrad.addColorStop(0, '#1c1917');
+  bgGrad.addColorStop(0.45, '#292524');
+  bgGrad.addColorStop(1, '#1c1917');
+  ctx.fillStyle = bgGrad;
+  ctx.fill();
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = '#f59e0b';
+  ctx.stroke();
+
+  // Subtle top radial glow
+  const glow = ctx.createRadialGradient(width / 2, 120, 20, width / 2, 160, 280);
+  glow.addColorStop(0, 'rgba(245, 158, 11, 0.25)');
+  glow.addColorStop(1, 'rgba(245, 158, 11, 0)');
+  ctx.fillStyle = glow;
+  ctx.fill();
+
+  // OVR & POS
+  ctx.fillStyle = '#fcd34d';
+  ctx.font = '900 74px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(String(params.ovr), 96, 108);
+
+  ctx.fillStyle = '#fbbf24';
+  ctx.font = '900 24px sans-serif';
+  ctx.fillText(params.pos, 96, 142);
+
+  // PeladaPro Crest Badge
+  drawRoundedRect(ctx, width - 178, 46, 134, 42, 14);
+  ctx.fillStyle = 'rgba(245, 158, 11, 0.2)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
+  ctx.stroke();
+  ctx.fillStyle = '#fcd34d';
+  ctx.font = '900 16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('PELADAPRO', width - 111, 73);
+
+  // Center Avatar Circle
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(width / 2, 290, 82, 0, Math.PI * 2);
+  ctx.fillStyle = '#1c1917';
+  ctx.fill();
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = '#fbbf24';
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.fillStyle = '#fbbf24';
+  ctx.font = '900 58px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(params.player.name.charAt(0).toUpperCase(), width / 2, 310);
+
+  // Player Name
+  ctx.fillStyle = '#fef3c7';
+  ctx.font = '900 32px sans-serif';
+  ctx.fillText(params.player.name.toUpperCase().slice(0, 18), width / 2, 430);
+
+  // Rating Stars
+  ctx.font = '24px sans-serif';
+  const rating = Math.max(1, Math.min(5, params.player.rating || 4));
+  const starStr = '★'.repeat(rating) + '☆'.repeat(5 - rating);
+  ctx.fillStyle = '#fbbf24';
+  ctx.fillText(starStr, width / 2, 468);
+
+  // Divider
+  ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(52, 505);
+  ctx.lineTo(width - 52, 505);
+  ctx.stroke();
+
+  // 6 Stats Grid
+  const rows: [string, number, string, number][] = [
+    ['RIT', params.stats.pac, 'DRI', params.stats.dri],
+    ['FIN', params.stats.sho, 'DEF', params.stats.def],
+    ['PAS', params.stats.pas, 'CHUR', params.stats.phy],
+  ];
+
+  rows.forEach(([lLabel, lVal, rLabel, rVal], idx) => {
+    const y = 562 + idx * 58;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = '900 28px monospace';
+    ctx.fillText(String(lVal), 72, y);
+    ctx.fillStyle = '#a8a29e';
+    ctx.font = '700 20px sans-serif';
+    ctx.fillText(lLabel, 134, y - 2);
+
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = '900 28px monospace';
+    ctx.fillText(String(rVal), 292, y);
+    ctx.fillStyle = '#a8a29e';
+    ctx.font = '700 20px sans-serif';
+    ctx.fillText(rLabel, 356, y - 2);
+  });
+
+  return canvas.toDataURL('image/png');
 }
 
 export const FifaCardModal: React.FC<FifaCardModalProps> = ({
@@ -18,6 +158,7 @@ export const FifaCardModal: React.FC<FifaCardModalProps> = ({
 }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [sharedFeedback, setSharedFeedback] = useState(false);
 
   if (!isOpen || !player) return null;
 
@@ -33,15 +174,15 @@ export const FifaCardModal: React.FC<FifaCardModalProps> = ({
   const def = player.isGoalkeeper ? 88 : Math.min(95, 68 + player.rating * 4);
   const phy = Math.min(99, 82 + player.rating * 3);
 
-  const handleDownloadCard = async () => {
-    if (!cardRef.current) return;
+  const handleDownloadCard = () => {
     setIsGenerating(true);
     try {
-      const canvas = await html2canvas(cardRef.current, {
-        backgroundColor: null,
-        scale: 2,
+      const dataUrl = renderFifaCardPng({
+        player,
+        ovr,
+        pos,
+        stats: { pac, dri, sho, def, pas, phy },
       });
-      const dataUrl = canvas.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = dataUrl;
       a.download = `cartinha-${player.name.replace(/\s+/g, '-').toLowerCase()}.png`;
@@ -55,16 +196,9 @@ export const FifaCardModal: React.FC<FifaCardModalProps> = ({
 
   const handleShareWhatsApp = async () => {
     const text = `🏆 *CRAQUE DA PELADA — PELADAPRO*\nAtleta: *${player.name}*\n⭐ Overall: *${ovr} OVR*\nPosição: *${pos}*\n⚽ Gols na Rodada: *${goalsScored}*\n_Gerado no PeladaPro App_ ⚡`;
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: 'Cartinha Craque da Pelada', text });
-        return;
-      } catch {
-        // Fallback
-      }
-    }
-    await navigator.clipboard.writeText(text);
-    alert('Texto do Craque copiado! Cole no grupo do WhatsApp.');
+    await openWhatsAppWithText(text, 'Cartinha Craque da Pelada');
+    setSharedFeedback(true);
+    setTimeout(() => setSharedFeedback(false), 2500);
   };
 
   return (
@@ -189,8 +323,8 @@ export const FifaCardModal: React.FC<FifaCardModalProps> = ({
             onClick={handleShareWhatsApp}
             className="py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-xl flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all"
           >
-            <Share2 className="w-4 h-4" />
-            <span>Mandar no Zap</span>
+            {sharedFeedback ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
+            <span>{sharedFeedback ? 'WhatsApp Aberto!' : 'Mandar no Zap'}</span>
           </button>
         </div>
       </div>

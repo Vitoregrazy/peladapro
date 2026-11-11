@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { CapacitorUpdater } from '@capgo/capacitor-updater';
+import { PUBLIC_APP_URL } from './appUrl';
 
 declare const __APP_VERSION__: string;
 declare const __BUILD_DATE__: string;
@@ -20,22 +21,17 @@ export interface OtaStatus {
 type OtaListener = (status: OtaStatus) => void;
 
 export const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL ||
-  'https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app'
+  import.meta.env.VITE_API_BASE_URL || PUBLIC_APP_URL
 ).replace(/\/$/, '');
 
-// Canal OTA principal: arquivos estáticos do GitHub (público, sem depender do deploy da Vercel)
+// Canal OTA principal para APK nativo: arquivos estáticos do GitHub (sem depender do deploy da Vercel)
 export const OTA_RAW_BASE_URL = (
   import.meta.env.VITE_OTA_BASE_URL ||
   'https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public'
 ).replace(/\/$/, '');
 
-const OTA_MANIFEST_SOURCES = [
-  { url: `${OTA_RAW_BASE_URL}/version.json` },
-  { url: `${API_BASE_URL}/version.json` },
-];
-
 const LOCAL_VERSION_KEY = 'peladapro_ota_installed_version';
+const WEB_RELOAD_GUARD_KEY = 'peladapro_ota_web_reloaded_version';
 
 /**
  * Compara duas versões SemVer (ex: "1.2.1" > "1.2.0" => 1)
@@ -151,18 +147,33 @@ class OtaService {
   /**
    * Consulta o version.json na Vercel e aplica a atualização se houver diferença
    */
-  public async checkForUpdate(forceImmediate = false): Promise<{ hasUpdate: boolean; remoteVersion?: string; error?: string }> {
+  public async checkForUpdate(_forceImmediate = false): Promise<{ hasUpdate: boolean; remoteVersion?: string; error?: string }> {
     if (this.isUpdating || (typeof navigator !== 'undefined' && !navigator.onLine)) {
       return { hasUpdate: false };
     }
 
     this.emit({ checking: true });
 
+    const isNative = Capacitor.isNativePlatform();
+    const manifestSources = isNative
+      ? [
+          { url: `${OTA_RAW_BASE_URL}/version.json` },
+          { url: `${API_BASE_URL}/version.json` },
+        ]
+      : [
+          {
+            url:
+              typeof window !== 'undefined' && window.location.origin
+                ? `${window.location.origin}/version.json`
+                : `${API_BASE_URL}/version.json`,
+          },
+          { url: `${API_BASE_URL}/version.json` },
+        ];
+
     try {
-      // Tenta cada fonte de manifesto (GitHub primeiro, Vercel como reserva) até achar um JSON válido
       let text = '';
       let lastStatus = 0;
-      for (const base of OTA_MANIFEST_SOURCES) {
+      for (const base of manifestSources) {
         try {
           const res = await fetch(`${base.url}?t=${Date.now()}`, {
             method: 'GET',
@@ -188,7 +199,7 @@ class OtaService {
 
       if (!text.trim().startsWith('{')) {
         const errorMsg = 'Aguardando publicação do deploy na Vercel...';
-        console.warn('[OTA] Resposta da Vercel foi HTML e não JSON:', text.slice(0, 80));
+        console.warn('[OTA] Resposta recebida não foi JSON:', text.slice(0, 80));
         this.emit({ checking: false, error: errorMsg });
         return { hasUpdate: false, error: errorMsg };
       }
@@ -203,6 +214,15 @@ class OtaService {
       if (!remoteVersion || !hasNewer) {
         this.emit({ checking: false });
         return { hasUpdate: false, remoteVersion };
+      }
+
+      // Proteção anti-loop na Web caso o CDN/SW ainda entregue o mesmo bundle após 1 reload
+      if (!isNative && typeof sessionStorage !== 'undefined') {
+        const alreadyTried = sessionStorage.getItem(WEB_RELOAD_GUARD_KEY);
+        if (alreadyTried === remoteVersion) {
+          this.emit({ checking: false });
+          return { hasUpdate: false, remoteVersion };
+        }
       }
 
       console.log(`🚀 [OTA] Nova versão detectada! Atual: ${currentVersion} -> Remota: ${remoteVersion}`);
@@ -267,9 +287,13 @@ class OtaService {
 
         // Força a troca imediata para o novo bundle baixado!
         await CapacitorUpdater.set({ id: bundle.id });
+        this.isUpdating = false;
       } else {
-        // MODO WEB / PWA: Limpa caches e força reload
+        // MODO WEB / PWA: Limpa caches e força reload único
         this.emit({ progress: 60 });
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(WEB_RELOAD_GUARD_KEY, targetVersion);
+        }
         if ('caches' in window) {
           try {
             const keys = await caches.keys();

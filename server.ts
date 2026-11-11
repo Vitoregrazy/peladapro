@@ -8,10 +8,12 @@ import { createServer as createViteServer } from 'vite';
 import roomsApiHandler from './api/rooms';
 import versionApiHandler from './api/version';
 import {
-  buildInitialRoom,
+  buildSeedRoom,
   getMemoryRoomsMap,
   saveRoomState,
 } from './src/services/vercelDb';
+import { sanitizePlayersHostFlag } from './src/utils/peladaLogic';
+import { hasDuplicatePlayer, normalizeRoomState } from './src/utils/roomState';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -104,7 +106,7 @@ async function startServer() {
 
           let room = rooms.get(code);
           if (!room) {
-            room = buildInitialRoom(code, `Arena ${code}`, userName);
+            room = buildSeedRoom(code, `Arena ${code}`, userName);
             rooms.set(code, room);
           }
 
@@ -130,7 +132,6 @@ async function startServer() {
             },
             ...room.activityFeed.slice(0, 19),
           ];
-          room.updatedAt = Date.now();
           broadcastRoomState(code);
           return;
         }
@@ -141,9 +142,9 @@ async function startServer() {
 
         if (msg.type === 'room:sync_full') {
           if (msg.payload) {
-            if (msg.payload.players) room.players = msg.payload.players;
+            if (Array.isArray(msg.payload.players)) room.players = msg.payload.players;
             if (msg.payload.rules) room.rules = msg.payload.rules;
-            if (msg.payload.drawnTeams) room.drawnTeams = msg.payload.drawnTeams;
+            if (Array.isArray(msg.payload.drawnTeams)) room.drawnTeams = msg.payload.drawnTeams;
             if (msg.payload.coinToss) room.coinToss = msg.payload.coinToss;
             if (msg.payload.liveMatch) room.liveMatch = msg.payload.liveMatch;
             if (msg.payload.championship !== undefined) {
@@ -160,12 +161,14 @@ async function startServer() {
               ...room.activityFeed.slice(0, 19),
             ];
           }
-          room.updatedAt = Date.now();
+          room.isServerSeed = false;
+          room.updatedAt = Number(msg.updatedAt) || Date.now();
+          rooms.set(room.code, normalizeRoomState(room));
           broadcastRoomState(room.code);
         } else if (msg.type === 'room:add_player') {
           const newPlayer = msg.player;
-          if (newPlayer && newPlayer.id && !room.players.some((p) => p.id === newPlayer.id)) {
-            room.players.push(newPlayer);
+          if (newPlayer && newPlayer.name && !hasDuplicatePlayer(room.players, newPlayer)) {
+            room.players = sanitizePlayersHostFlag([...room.players, newPlayer]);
             room.activityFeed = [
               {
                 id: `act-${Date.now()}`,
@@ -176,6 +179,7 @@ async function startServer() {
               },
               ...room.activityFeed.slice(0, 19),
             ];
+            room.isServerSeed = false;
             room.updatedAt = Date.now();
             broadcastRoomState(room.code);
           }
@@ -193,6 +197,7 @@ async function startServer() {
               },
               ...room.activityFeed.slice(0, 19),
             ];
+            room.isServerSeed = false;
             room.updatedAt = Date.now();
             broadcastRoomState(room.code);
           }

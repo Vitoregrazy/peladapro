@@ -57,7 +57,7 @@ const versionManifest = {
   mandatory: true,
   bundlePath: '/ota-bundle.zip',
   bundleUrl: 'https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public/ota-bundle.zip',
-  releaseNotes: 'Atualização oficial PeladaPro: estabilidade, sorteio furtivo e rotação Arian/Murilo.',
+  releaseNotes: 'Atualização oficial PeladaPro: melhorias de estabilidade, sincronização em tempo real e envio para WhatsApp.',
 };
 
 fs.writeFileSync(
