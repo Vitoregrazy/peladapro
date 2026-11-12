@@ -3,13 +3,13 @@ import {
   DEFAULT_RULES,
   drawTeams,
   INITIAL_PLAYERS,
-} from '../utils/peladaLogic';
+} from '../utils/peladaLogic.js';
 import {
   createDefaultCoinToss,
   createDefaultLiveMatch,
   normalizeRoomState,
-} from '../utils/roomState';
-import { RoomState } from '../types/pelada';
+} from '../utils/roomState.js';
+import type { RoomState } from '../types/pelada.js';
 
 const memoryRooms = new Map<string, RoomState>();
 let schemaInitialized = false;

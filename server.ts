@@ -5,15 +5,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
-import roomsApiHandler from './api/rooms';
-import versionApiHandler from './api/version';
+import roomsApiHandler from './api/rooms.js';
+import versionApiHandler from './api/version.js';
 import {
   buildSeedRoom,
   getMemoryRoomsMap,
   saveRoomState,
-} from './src/services/vercelDb';
-import { sanitizePlayersHostFlag } from './src/utils/peladaLogic';
-import { hasDuplicatePlayer, normalizeRoomState } from './src/utils/roomState';
+} from './src/services/vercelDb.js';
+import { sanitizePlayersHostFlag } from './src/utils/peladaLogic.js';
+import { hasDuplicatePlayer, normalizeRoomState } from './src/utils/roomState.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

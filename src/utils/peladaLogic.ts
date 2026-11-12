@@ -1,4 +1,4 @@
-import {
+import type {
   Championship,
   ChampionshipMatch,
   CoinTossState,
@@ -8,7 +8,7 @@ import {
   RiggingConfig,
   StandingRow,
   TopScorerRow,
-} from '../types/pelada';
+} from '../types/pelada.js';
 
 export const TEAM_PALETTE = [
   { name: 'Time Verde Esmeralda', shortName: 'ESM', accentHex: '#10B981' },

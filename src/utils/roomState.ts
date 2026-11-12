@@ -1,15 +1,15 @@
-import {
+import type {
   CoinTossState,
   LiveMatchState,
   MatchRules,
   Player,
   RoomState,
-} from '../types/pelada';
+} from '../types/pelada.js';
 import {
   DEFAULT_RULES,
   normalizePlayerName,
   sanitizePlayersHostFlag,
-} from './peladaLogic';
+} from './peladaLogic.js';
 
 export function createDefaultCoinToss(teamAId = 'team-1'): CoinTossState {
   return {

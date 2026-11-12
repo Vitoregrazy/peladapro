@@ -4,9 +4,9 @@ import {
   getActiveStorageType,
   getRoomState,
   saveRoomState,
-} from '../src/services/vercelDb';
-import { sanitizePlayersHostFlag } from '../src/utils/peladaLogic';
-import { hasDuplicatePlayer, normalizeRoomState } from '../src/utils/roomState';
+} from '../src/services/vercelDb.js';
+import { sanitizePlayersHostFlag } from '../src/utils/peladaLogic.js';
+import { hasDuplicatePlayer, normalizeRoomState } from '../src/utils/roomState.js';
 
 export default async function handler(req: Request | any, res: Response | any) {
   res.setHeader('Access-Control-Allow-Origin', '*');

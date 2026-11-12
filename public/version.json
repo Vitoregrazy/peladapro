@@ -1,8 +1,8 @@
 {
   "version": "1.2.6",
-  "buildId": "1.2.6-1794485013210",
-  "checksum": "66a8af7911d76089cf5d56c0b1115f339378cf6955d9ba7fd7313a0536dbfa8e",
-  "timestamp": "2026-11-12T12:03:33.210Z",
+  "buildId": "1.2.6-1794486486406",
+  "checksum": "30802d2199814cbef7a6816abb876737e64e2fd6eecd9b31b52642b55b4ebb6a",
+  "timestamp": "2026-11-12T12:28:06.406Z",
   "forceUpdate": true,
   "mandatory": true,
   "bundlePath": "/ota-bundle.zip",
