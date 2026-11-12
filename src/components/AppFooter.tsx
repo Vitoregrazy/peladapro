@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { AlertCircle, CheckCircle2, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react';
-import { APP_VERSION, BUILD_DATE, otaService, API_BASE_URL } from '../services/otaService';
+import React, { useEffect, useState } from 'react';
+import { AlertCircle, CheckCircle2, ExternalLink, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { APP_VERSION, BUILD_DATE, otaService, API_BASE_URL, OtaStatus } from '../services/otaService';
 
 interface AppFooterProps {
   roomCode?: string;
@@ -8,7 +8,12 @@ interface AppFooterProps {
 
 export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => {
   const [checking, setChecking] = useState(false);
+  const [otaStatus, setOtaStatus] = useState<OtaStatus | null>(null);
   const [statusMsg, setStatusMsg] = useState<{ isError: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    return otaService.subscribe(setOtaStatus);
+  }, []);
 
   const handleManualCheck = async () => {
     if (checking) return;
@@ -22,11 +27,11 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
           isError: true,
           text: `Aviso: ${res.error}`,
         });
-        setTimeout(() => setStatusMsg(null), 5000);
+        setTimeout(() => setStatusMsg(null), 6000);
       } else if (res.hasUpdate) {
         setStatusMsg({
           isError: false,
-          text: `Nova versão v${res.remoteVersion} encontrada! Instalando no aparelho...`,
+          text: `Nova versão v${res.remoteVersion} instalada! Reiniciando...`,
         });
       } else {
         setStatusMsg({
@@ -40,21 +45,35 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
         isError: true,
         text: err?.message || 'Não foi possível verificar. Verifique sua conexão.',
       });
-      setTimeout(() => setStatusMsg(null), 4000);
+      setTimeout(() => setStatusMsg(null), 5000);
     } finally {
       setChecking(false);
     }
   };
 
+  const hasPendingBlock = Boolean(otaStatus?.blocked && otaStatus?.blockingReason === 'mandatory_update');
+
   return (
     <footer className="mt-8 border-t border-slate-800/80 bg-slate-950/80 py-5 px-4 text-center backdrop-blur-md">
       <div className="mx-auto max-w-md flex flex-col items-center gap-2.5">
         {/* Destacado: Versão Atual do Sistema */}
-        <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-1 text-xs font-bold text-emerald-400 shadow-sm">
-          <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
+        <div
+          className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-1 text-xs font-bold shadow-sm ${
+            hasPendingBlock
+              ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+              : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+          }`}
+        >
+          {hasPendingBlock ? (
+            <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0" />
+          ) : (
+            <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
+          )}
           <span>PeladaPro v{APP_VERSION}</span>
           <span className="text-slate-600">•</span>
-          <span className="text-emerald-300 font-semibold">Sistema Atualizado</span>
+          <span className={hasPendingBlock ? 'text-amber-200 font-semibold' : 'text-emerald-300 font-semibold'}>
+            {hasPendingBlock ? `Atualização v${otaStatus?.targetVersion} Obrigatória` : 'Sistema Atualizado'}
+          </span>
         </div>
 
         {/* Informações de Compilação & Verificação Manual */}
@@ -108,4 +127,3 @@ export const AppFooter: React.FC<AppFooterProps> = ({ roomCode = 'SOC-10' }) => 
     </footer>
   );
 };
-

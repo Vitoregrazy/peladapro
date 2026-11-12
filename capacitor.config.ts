@@ -10,9 +10,12 @@ const config: CapacitorConfig = {
   },
   plugins: {
     CapacitorUpdater: {
-      // Desativa o cloud pago da Capgo; usamos nosso próprio servidor OTA gratuito via Vercel
+      // Desativa o cloud pago da Capgo; usamos nosso próprio canal OTA via GitHub/Vercel
       autoUpdate: false,
-      resetWhenUpdate: false,
+      // Garante que instalar um APK nativo mais novo substitua bundles OTA antigos
+      resetWhenUpdate: true,
+      appReadyTimeout: 15000,
+      responseTimeout: 30,
     },
   },
 };

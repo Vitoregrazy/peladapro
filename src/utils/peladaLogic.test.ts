@@ -17,6 +17,13 @@ import {
   syncChampionshipKnockout,
 } from './peladaLogic';
 import { hasDuplicatePlayer, normalizeRoomState } from './roomState';
+import {
+  appendCacheBuster,
+  compareSemver,
+  isMandatoryManifest,
+  selectBestOtaManifest,
+  shouldBlockForMandatoryUpdate,
+} from '../services/otaHelpers';
 import { MatchRules, Player, RiggingConfig } from '../types/pelada';
 
 test('parseWhatsAppList extracts goalkeepers and outfield players from typical WhatsApp text', () => {
@@ -559,5 +566,33 @@ test('normalizeRoomState preenche padrões seguros para JSONB parcial e hasDupli
   assert.equal(
     hasDuplicatePlayer(partialRoom.players, { id: 'p-new-2', name: 'Carlos Alberto' }),
     false
+  );
+});
+
+test('OTA obrigatório: bloqueia versão desatualizada, seleciona manifesto com checksum SHA-256 e preserva querystring', () => {
+  assert.equal(compareSemver('1.2.6', '1.2.5'), 1);
+  assert.equal(compareSemver('v1.2.6', '1.2.6'), 0);
+  assert.equal(compareSemver('1.2.4', '1.2.6'), -1);
+
+  assert.equal(shouldBlockForMandatoryUpdate('1.2.5', '1.2.6', true), true);
+  assert.equal(shouldBlockForMandatoryUpdate('1.2.6', '1.2.6', true), false);
+  assert.equal(isMandatoryManifest({ version: '1.2.6', forceUpdate: true }), true);
+  assert.equal(isMandatoryManifest({ version: '1.2.6', mandatory: false, forceUpdate: false }), false);
+
+  const selected = selectBestOtaManifest([
+    { version: '1.2.5', checksum: 'old' },
+    { version: '1.2.6' },
+    { version: '1.2.6', checksum: 'abc123sha256' },
+  ]);
+  assert.equal(selected?.version, '1.2.6');
+  assert.equal(selected?.checksum, 'abc123sha256');
+
+  assert.equal(
+    appendCacheBuster('https://raw.githubusercontent.com/x/ota.zip', '1.2.6', 999),
+    'https://raw.githubusercontent.com/x/ota.zip?v=1.2.6&t=999'
+  );
+  assert.equal(
+    appendCacheBuster('https://example.com/ota.zip?token=1', '1.2.6', 999),
+    'https://example.com/ota.zip?token=1&v=1.2.6&t=999'
   );
 });

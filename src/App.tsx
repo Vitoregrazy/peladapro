@@ -82,7 +82,7 @@ import {
   playWhistleMatchEnd,
   setSoundEnabled,
 } from './services/soundEffects';
-import { otaService } from './services/otaService';
+import { OtaStatus, otaService } from './services/otaService';
 import { Capacitor } from '@capacitor/core';
 
 type ActiveTab = 'draw' | 'match' | 'tournament' | 'live';
@@ -185,6 +185,13 @@ export default function App() {
   const stateUpdatedAtRef = useRef<number>(initialHydrated.updatedAt);
   const lastUserMutationAtRef = useRef<number>(0);
   const syncAbortControllerRef = useRef<AbortController | null>(null);
+
+  // Estado OTA global para bloqueio obrigatório até atualizar
+  const [otaStatus, setOtaStatus] = useState<OtaStatus | null>(null);
+  useEffect(() => {
+    void otaService.init();
+    return otaService.subscribe(setOtaStatus);
+  }, []);
 
   // License & VIP State (Degustação de 14 dias + Chave VIP)
   const [license, setLicense] = useState<LicenseStatus>(() => getLicenseStatus());
@@ -1059,8 +1066,27 @@ export default function App() {
         ? [drawnTeams[selectedTeamView]]
         : drawnTeams;
 
+  const isMandatoryOtaLocked = Boolean(
+    otaStatus?.updating ||
+      (otaStatus?.blocked && otaStatus?.blockingReason === 'mandatory_update')
+  );
+  const isBootChecking = Boolean(otaStatus?.blocked && otaStatus?.blockingReason === 'boot_check');
+
+  if (isMandatoryOtaLocked) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100">
+        <OtaUpdateOverlay />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-24 md:pb-12">
+    <div
+      aria-hidden={isBootChecking}
+      className={`min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-24 md:pb-12 ${
+        isBootChecking ? 'max-h-screen overflow-hidden pointer-events-none select-none' : ''
+      }`}
+    >
       <OtaUpdateOverlay />
       {/* Strict 3-Zone Top Bar Contract */}
       <header className="sticky top-0 z-30 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/90 px-3 sm:px-8 py-3 flex items-center justify-between gap-4">

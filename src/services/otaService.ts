@@ -1,6 +1,16 @@
 import { Capacitor } from '@capacitor/core';
 import { CapacitorUpdater } from '@capgo/capacitor-updater';
 import { PUBLIC_APP_URL } from './appUrl';
+import {
+  OtaManifest,
+  appendCacheBuster,
+  compareSemver,
+  isMandatoryManifest,
+  selectBestOtaManifest,
+  shouldBlockForMandatoryUpdate,
+} from './otaHelpers';
+
+export { compareSemver };
 
 declare const __APP_VERSION__: string;
 declare const __BUILD_DATE__: string;
@@ -11,11 +21,15 @@ export const BUILD_DATE = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__
 export interface OtaStatus {
   checking: boolean;
   updating: boolean;
+  blocked: boolean;
+  blockingReason?: 'mandatory_update' | 'boot_check';
   progress: number;
   currentVersion: string;
   targetVersion?: string;
+  releaseNotes?: string;
   error?: string;
   mandatory?: boolean;
+  webServerPending?: boolean;
 }
 
 type OtaListener = (status: OtaStatus) => void;
@@ -31,21 +45,32 @@ export const OTA_RAW_BASE_URL = (
 ).replace(/\/$/, '');
 
 const LOCAL_VERSION_KEY = 'peladapro_ota_installed_version';
+const REQUIRED_VERSION_KEY = 'peladapro_ota_required_version';
+const REQUIRED_META_KEY = 'peladapro_ota_required_meta';
 const WEB_RELOAD_GUARD_KEY = 'peladapro_ota_web_reloaded_version';
 
-/**
- * Compara duas versões SemVer (ex: "1.2.1" > "1.2.0" => 1)
- */
-export function compareSemver(v1: string, v2: string): number {
-  const clean1 = v1.replace(/^v/i, '').trim().split('.').map(Number);
-  const clean2 = v2.replace(/^v/i, '').trim().split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const a = clean1[i] || 0;
-    const b = clean2[i] || 0;
-    if (a > b) return 1;
-    if (a < b) return -1;
+async function fetchJsonWithTimeout(url: string, timeoutMs: number): Promise<{ status: number; data: OtaManifest | null }> {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller?.signal,
+    });
+    if (!res.ok) {
+      return { status: res.status, data: null };
+    }
+    const body = await res.text();
+    if (!body.trim().startsWith('{')) {
+      return { status: res.status, data: null };
+    }
+    return { status: res.status, data: JSON.parse(body) as OtaManifest };
+  } catch {
+    return { status: 0, data: null };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return 0;
 }
 
 class OtaService {
@@ -53,21 +78,86 @@ class OtaService {
   private isUpdating = false;
   private pollIntervalId: number | null = null;
   private initialized = false;
-  private status: OtaStatus = {
-    checking: false,
-    updating: false,
-    progress: 0,
-    currentVersion: this.getInstalledVersion(),
-  };
+  private status: OtaStatus = this.buildInitialStatus();
+
+  private buildInitialStatus(): OtaStatus {
+    const currentVersion = this.getInstalledVersion();
+    const persisted = this.readPersistedMandatoryUpdate();
+
+    if (persisted && shouldBlockForMandatoryUpdate(currentVersion, persisted.version, true)) {
+      return {
+        checking: false,
+        updating: false,
+        blocked: true,
+        blockingReason: 'mandatory_update',
+        progress: 0,
+        currentVersion,
+        targetVersion: persisted.version,
+        releaseNotes: persisted.releaseNotes,
+        mandatory: true,
+      };
+    }
+
+    // Já estamos rodando na versão igual ou superior: limpa qualquer trava residual
+    this.clearPersistedMandatoryUpdate();
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(WEB_RELOAD_GUARD_KEY);
+    }
+
+    return {
+      checking: false,
+      updating: false,
+      blocked: false,
+      progress: 0,
+      currentVersion,
+    };
+  }
+
+  private readPersistedMandatoryUpdate(): OtaManifest | null {
+    if (typeof localStorage === 'undefined') return null;
+    try {
+      const savedVersion = localStorage.getItem(REQUIRED_VERSION_KEY);
+      if (!savedVersion) return null;
+      const rawMeta = localStorage.getItem(REQUIRED_META_KEY);
+      if (rawMeta) {
+        const parsed = JSON.parse(rawMeta) as OtaManifest;
+        return { ...parsed, version: parsed.version || savedVersion };
+      }
+      return { version: savedVersion, mandatory: true, forceUpdate: true };
+    } catch {
+      return null;
+    }
+  }
+
+  private persistMandatoryUpdate(manifest: OtaManifest) {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(REQUIRED_VERSION_KEY, manifest.version);
+      localStorage.setItem(REQUIRED_META_KEY, JSON.stringify(manifest));
+    } catch {
+      // ignore storage quota errors
+    }
+  }
+
+  private clearPersistedMandatoryUpdate() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.removeItem(REQUIRED_VERSION_KEY);
+      localStorage.removeItem(REQUIRED_META_KEY);
+    } catch {
+      // ignore
+    }
+  }
 
   public getInstalledVersion(): string {
-    const saved = localStorage.getItem(LOCAL_VERSION_KEY);
     const buildVer = APP_VERSION;
-    if (buildVer && buildVer !== '0.0.0' && saved !== buildVer) {
-      localStorage.setItem(LOCAL_VERSION_KEY, buildVer);
-      return buildVer;
+    if (typeof localStorage !== 'undefined') {
+      const saved = localStorage.getItem(LOCAL_VERSION_KEY);
+      if (buildVer && buildVer !== '0.0.0' && saved !== buildVer) {
+        localStorage.setItem(LOCAL_VERSION_KEY, buildVer);
+      }
     }
-    return saved || buildVer;
+    return buildVer;
   }
 
   public subscribe(listener: OtaListener): () => void {
@@ -88,7 +178,7 @@ class OtaService {
     if (this.initialized) return;
     this.initialized = true;
 
-    // 1. Confirma ao plugin nativo que o bundle iniciou sem crash (evita rollback nativo de 10s)
+    // 1. Confirma ao plugin nativo que o bundle iniciou sem crash (evita rollback nativo)
     if (Capacitor.isNativePlatform()) {
       try {
         await CapacitorUpdater.notifyAppReady();
@@ -109,10 +199,17 @@ class OtaService {
       }
     }
 
-    // 2. Verifica imediatamente no boot (com pequeno atraso de 1s para o app renderizar)
-    setTimeout(() => {
-      void this.checkForUpdate();
-    }, 1000);
+    // 2. Verifica imediatamente no boot: se online, trava entrada até validar que está na última versão
+    const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
+    if (isOnline && !this.status.blocked) {
+      this.emit({
+        checking: true,
+        blocked: true,
+        blockingReason: 'boot_check',
+      });
+    }
+
+    void this.checkForUpdate(true, true);
 
     // 3. Verifica ao voltar para o aplicativo (visibilidade/foco)
     if (typeof document !== 'undefined') {
@@ -125,10 +222,10 @@ class OtaService {
 
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
-        void this.checkForUpdate();
+        void this.checkForUpdate(true);
       });
 
-      // 4. Polling periódico a cada 45 segundos para atualizar APKs em segundo plano
+      // 4. Polling periódico a cada 45 segundos para atualizar APKs/Web em segundo plano
       if (this.pollIntervalId) window.clearInterval(this.pollIntervalId);
       this.pollIntervalId = window.setInterval(() => {
         void this.checkForUpdate();
@@ -145,120 +242,222 @@ class OtaService {
   }
 
   /**
-   * Consulta o version.json na Vercel e aplica a atualização se houver diferença
+   * Botão "Instalar Atualização Agora" na tela de bloqueio obrigatório
    */
-  public async checkForUpdate(_forceImmediate = false): Promise<{ hasUpdate: boolean; remoteVersion?: string; error?: string }> {
-    if (this.isUpdating || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-      return { hasUpdate: false };
+  public async retryUpdate(): Promise<{ hasUpdate: boolean; remoteVersion?: string; error?: string }> {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(WEB_RELOAD_GUARD_KEY);
+    }
+    return this.checkForUpdate(true);
+  }
+
+  /**
+   * Consulta version.json, impõe bloqueio obrigatório e aplica atualização se houver versão mais nova
+   */
+  public async checkForUpdate(
+    _forceImmediate = false,
+    isBootCheck = false
+  ): Promise<{ hasUpdate: boolean; remoteVersion?: string; error?: string }> {
+    if (this.isUpdating) {
+      return { hasUpdate: Boolean(this.status.targetVersion), remoteVersion: this.status.targetVersion };
     }
 
-    this.emit({ checking: true });
+    const currentVersion = this.getInstalledVersion();
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const persisted = this.readPersistedMandatoryUpdate();
+      const stayBlocked = shouldBlockForMandatoryUpdate(currentVersion, persisted?.version, true);
+      this.emit({
+        checking: false,
+        blocked: stayBlocked,
+        blockingReason: stayBlocked ? 'mandatory_update' : undefined,
+        error: stayBlocked ? 'Sem internet para baixar a atualização obrigatória.' : undefined,
+      });
+      return {
+        hasUpdate: stayBlocked,
+        remoteVersion: persisted?.version,
+        error: stayBlocked ? 'Sem internet para baixar a atualização obrigatória.' : undefined,
+      };
+    }
+
+    this.emit({ checking: true, error: undefined });
 
     const isNative = Capacitor.isNativePlatform();
-    const manifestSources = isNative
-      ? [
-          { url: `${OTA_RAW_BASE_URL}/version.json` },
-          { url: `${API_BASE_URL}/version.json` },
-        ]
+    const timeoutMs = isBootCheck ? 4000 : 8000;
+    const sources = isNative
+      ? [`${OTA_RAW_BASE_URL}/version.json`, `${API_BASE_URL}/version.json`, `${API_BASE_URL}/api/version`]
       : [
-          {
-            url:
-              typeof window !== 'undefined' && window.location.origin
-                ? `${window.location.origin}/version.json`
-                : `${API_BASE_URL}/version.json`,
-          },
-          { url: `${API_BASE_URL}/version.json` },
+          typeof window !== 'undefined' && window.location.origin
+            ? `${window.location.origin}/version.json`
+            : `${API_BASE_URL}/version.json`,
+          `${API_BASE_URL}/version.json`,
+          `${OTA_RAW_BASE_URL}/version.json`,
         ];
 
     try {
-      let text = '';
-      let lastStatus = 0;
-      for (const base of manifestSources) {
-        try {
-          const res = await fetch(`${base.url}?t=${Date.now()}`, {
-            method: 'GET',
-            cache: 'no-store',
-          });
-          lastStatus = res.status;
-          if (!res.ok) continue;
-          const body = await res.text();
-          if (body.trim().startsWith('{')) {
-            text = body;
-            break;
-          }
-        } catch {
-          // tenta a próxima fonte
-        }
+      const results = await Promise.all(
+        sources.map(async (url, index) => ({
+          index,
+          url,
+          ...(await fetchJsonWithTimeout(url, timeoutMs)),
+        }))
+      );
+
+      const validManifests = results
+        .map((r) => r.data)
+        .filter((d): d is OtaManifest => Boolean(d && d.version));
+
+      const remote = selectBestOtaManifest(validManifests);
+
+      if (!remote) {
+        // Se já existe versão obrigatória salva localmente e menor que a atual, mantém bloqueado
+        const persisted = this.readPersistedMandatoryUpdate();
+        const stayBlocked = shouldBlockForMandatoryUpdate(currentVersion, persisted?.version, true);
+        const lastStatus = results.find((r) => r.status && r.status !== 200)?.status || 0;
+        const errorMsg = lastStatus
+          ? `Servidor retornou status ${lastStatus}`
+          : 'Não foi possível ler o manifesto de atualização.';
+
+        this.emit({
+          checking: false,
+          blocked: stayBlocked,
+          blockingReason: stayBlocked ? 'mandatory_update' : undefined,
+          error: stayBlocked ? errorMsg : undefined,
+        });
+        return { hasUpdate: stayBlocked, remoteVersion: persisted?.version, error: errorMsg };
       }
 
-      if (!text && lastStatus && lastStatus !== 200) {
-        const errorMsg = `Servidor retornou status ${lastStatus}`;
-        this.emit({ checking: false, error: errorMsg });
-        return { hasUpdate: false, error: errorMsg };
-      }
-
-      if (!text.trim().startsWith('{')) {
-        const errorMsg = 'Aguardando publicação do deploy na Vercel...';
-        console.warn('[OTA] Resposta recebida não foi JSON:', text.slice(0, 80));
-        this.emit({ checking: false, error: errorMsg });
-        return { hasUpdate: false, error: errorMsg };
-      }
-
-      const remote = JSON.parse(text);
-      const remoteVersion = String(remote.version || '');
-      const currentVersion = this.getInstalledVersion();
-
+      const remoteVersion = String(remote.version || '').trim();
       const hasNewer = compareSemver(remoteVersion, currentVersion) > 0;
 
-      // Só atualiza para versões MAIS NOVAS (nunca faz downgrade de um APK mais recente)
-      if (!remoteVersion || !hasNewer) {
-        this.emit({ checking: false });
+      if (!hasNewer) {
+        this.clearPersistedMandatoryUpdate();
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.removeItem(WEB_RELOAD_GUARD_KEY);
+        }
+        this.emit({
+          checking: false,
+          updating: false,
+          blocked: false,
+          blockingReason: undefined,
+          webServerPending: false,
+          error: undefined,
+        });
         return { hasUpdate: false, remoteVersion };
       }
 
-      // Proteção anti-loop na Web caso o CDN/SW ainda entregue o mesmo bundle após 1 reload
+      const mandatory = isMandatoryManifest(remote);
+      if (mandatory) {
+        this.persistMandatoryUpdate(remote);
+      }
+
+      // Na Web, verifica se o próprio domínio atual já publicou essa versão ou se ainda está em cache antigo
+      const sameOriginManifest = !isNative ? results[0]?.data : null;
+      const webOriginReady = isNative
+        ? true
+        : Boolean(sameOriginManifest?.version && compareSemver(sameOriginManifest.version, remoteVersion) >= 0);
+
+      // Proteção anti-loop na Web: se já recarregou 1x tentando buscar essa versão e o servidor/cache
+      // ainda entregou o bundle antigo, NÃO libera o site — mantém a tela de bloqueio obrigatório!
       if (!isNative && typeof sessionStorage !== 'undefined') {
         const alreadyTried = sessionStorage.getItem(WEB_RELOAD_GUARD_KEY);
-        if (alreadyTried === remoteVersion) {
-          this.emit({ checking: false });
-          return { hasUpdate: false, remoteVersion };
+        if (alreadyTried === remoteVersion || !webOriginReady) {
+          this.emit({
+            checking: false,
+            updating: false,
+            blocked: mandatory,
+            blockingReason: mandatory ? 'mandatory_update' : undefined,
+            targetVersion: remoteVersion,
+            releaseNotes: remote.releaseNotes,
+            mandatory,
+            webServerPending: !webOriginReady,
+            error: !webOriginReady
+              ? `A nova versão v${remoteVersion} já foi publicada e está aguardando propagação no servidor Web.`
+              : `O navegador ainda carregou o cache antigo após recarregar. Limpe o cache ou clique em "Instalar Atualização Agora".`,
+          });
+          return {
+            hasUpdate: true,
+            remoteVersion,
+            error: 'Atualização obrigatória pendente na Web.',
+          };
         }
       }
 
-      console.log(`🚀 [OTA] Nova versão detectada! Atual: ${currentVersion} -> Remota: ${remoteVersion}`);
-      await this.applyForcedUpdate(remoteVersion, remote.bundleUrl || remote.bundlePath || '/ota-bundle.zip');
+      console.log(`🚀 [OTA] Nova versão obrigatória detectada! Atual: ${currentVersion} -> Remota: ${remoteVersion}`);
+      const applyResult = await this.applyForcedUpdate(
+        remoteVersion,
+        remote.bundleUrl || remote.bundlePath || '/ota-bundle.zip',
+        {
+          checksum: remote.checksum,
+          releaseNotes: remote.releaseNotes,
+          mandatory,
+        }
+      );
+
+      if (!applyResult.ok) {
+        return {
+          hasUpdate: true,
+          remoteVersion,
+          error: applyResult.error || 'Falha ao instalar atualização.',
+        };
+      }
+
       return { hasUpdate: true, remoteVersion };
     } catch (err: any) {
+      const persisted = this.readPersistedMandatoryUpdate();
+      const stayBlocked = shouldBlockForMandatoryUpdate(currentVersion, persisted?.version, true);
       const errorMsg = err?.message || 'Sem conexão com o servidor de atualização';
       console.warn('[OTA] Falha ao consultar version.json:', errorMsg);
-      this.emit({ checking: false, error: errorMsg });
-      return { hasUpdate: false, error: errorMsg };
+      this.emit({
+        checking: false,
+        blocked: stayBlocked,
+        blockingReason: stayBlocked ? 'mandatory_update' : undefined,
+        error: stayBlocked ? errorMsg : undefined,
+      });
+      return { hasUpdate: stayBlocked, error: errorMsg };
     }
   }
 
   /**
-   * Baixa o bundle da Vercel e força a troca imediata no APK ou Web
+   * Baixa o bundle com verificação SHA-256 checksum e força troca imediata no APK ou Web.
    */
-  public async applyForcedUpdate(targetVersion: string, bundlePath: string) {
-    if (this.isUpdating) return;
+  public async applyForcedUpdate(
+    targetVersion: string,
+    bundlePath: string,
+    options?: { checksum?: string; releaseNotes?: string; mandatory?: boolean }
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (this.isUpdating) return { ok: false, error: 'Atualização já em andamento.' };
     this.isUpdating = true;
+
+    const mandatory = options?.mandatory ?? true;
 
     this.emit({
       checking: false,
       updating: true,
+      blocked: mandatory,
+      blockingReason: mandatory ? 'mandatory_update' : undefined,
       progress: 10,
       targetVersion,
-      mandatory: true,
+      releaseNotes: options?.releaseNotes,
+      mandatory,
+      webServerPending: false,
       error: undefined,
     });
 
-    const bundleUrl = bundlePath.startsWith('http')
-      ? `${bundlePath}?v=${targetVersion}&t=${Date.now()}`
-      : `${OTA_RAW_BASE_URL}${bundlePath.startsWith('/') ? '' : '/'}${bundlePath}?v=${targetVersion}&t=${Date.now()}`;
+    const rawUrl = bundlePath.startsWith('http')
+      ? bundlePath
+      : `${OTA_RAW_BASE_URL}${bundlePath.startsWith('/') ? '' : '/'}${bundlePath}`;
+    const bundleUrl = appendCacheBuster(rawUrl, targetVersion);
 
     try {
       if (Capacitor.isNativePlatform()) {
-        // MODO NATIVO ANDROID: Limpa bundles antigos com a mesma versão antes de baixar
+        // @capgo/capacitor-updater v8 exige checksum SHA-256 em downloads sem manifest
+        const checksum = options?.checksum?.trim();
+        if (!checksum) {
+          throw new Error('Manifesto OTA sem checksum SHA-256 obrigatório.');
+        }
+
+        // Limpa bundles anteriores da mesma versão que não estejam em uso (inclui falhos/parciais)
         try {
           const list = await CapacitorUpdater.list();
           const current = await CapacitorUpdater.current();
@@ -277,22 +476,29 @@ class OtaService {
         const bundle = await CapacitorUpdater.download({
           url: bundleUrl,
           version: targetVersion,
+          checksum,
         });
 
-        this.emit({ progress: 100 });
-        localStorage.setItem(LOCAL_VERSION_KEY, targetVersion);
+        this.emit({ progress: 98 });
+        await new Promise((r) => setTimeout(r, 350));
 
-        // Delay suave de 400ms para feedback visual
-        await new Promise((r) => setTimeout(r, 400));
-
-        // Força a troca imediata para o novo bundle baixado!
+        // Força a troca imediata e recarrega o WebView para o novo bundle!
         await CapacitorUpdater.set({ id: bundle.id });
         this.isUpdating = false;
+        return { ok: true };
       } else {
-        // MODO WEB / PWA: Limpa caches e força reload único
+        // MODO WEB / PWA: Remove service workers e caches e força reload único com cache-buster
         this.emit({ progress: 60 });
         if (typeof sessionStorage !== 'undefined') {
           sessionStorage.setItem(WEB_RELOAD_GUARD_KEY, targetVersion);
+        }
+        if ('serviceWorker' in navigator) {
+          try {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map((r) => r.unregister()));
+          } catch {
+            // ignore
+          }
         }
         if ('caches' in window) {
           try {
@@ -302,22 +508,28 @@ class OtaService {
             // ignore
           }
         }
-        localStorage.setItem(LOCAL_VERSION_KEY, targetVersion);
         this.emit({ progress: 100 });
-        await new Promise((r) => setTimeout(r, 300));
-        window.location.replace(`${window.location.pathname}?v=${targetVersion}`);
+        await new Promise((r) => setTimeout(r, 250));
+        window.location.replace(appendCacheBuster(window.location.pathname, targetVersion));
+        return { ok: true };
       }
     } catch (error: any) {
+      const errMsg = error?.message || 'Falha ao baixar ou instalar atualização';
       console.error('❌ [OTA] Erro ao aplicar atualização:', error);
       this.isUpdating = false;
       this.emit({
         updating: false,
         checking: false,
-        error: error?.message || 'Falha ao baixar atualização',
+        blocked: mandatory,
+        blockingReason: mandatory ? 'mandatory_update' : undefined,
+        targetVersion,
+        releaseNotes: options?.releaseNotes,
+        mandatory,
+        error: errMsg,
       });
+      return { ok: false, error: errMsg };
     }
   }
 }
 
 export const otaService = new OtaService();
-
