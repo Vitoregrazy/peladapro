@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Copy, Link2, Plus, Share2, Users, Wifi } from 'lucide-react';
+import { Check, Copy, Link2, Plus, Share2, Users, Wifi, Trophy, Eye, Sparkles } from 'lucide-react';
 import { Player, RoomState } from '../types/pelada';
 import { generateInviteLink } from '../services/appUrl';
 
@@ -9,10 +9,12 @@ interface LiveRoomViewProps {
   isConnected: boolean;
   roomState: RoomState | null;
   players: Player[];
+  myAthleteName?: string | null;
   onJoinRoom: (code: string, userName: string) => void;
   onCreateNewPrivateRoom: (roomName: string, hostName: string) => Promise<void>;
   onAddGuestPlayerToRoom: (player: Player) => void;
   onToggleRoomPlayerPresence: (playerId: string) => void;
+  onNavigateToDraw?: () => void;
 }
 
 export const LiveRoomView: React.FC<LiveRoomViewProps> = ({
@@ -21,10 +23,12 @@ export const LiveRoomView: React.FC<LiveRoomViewProps> = ({
   isConnected,
   roomState,
   players,
+  myAthleteName = null,
   onJoinRoom,
   onCreateNewPrivateRoom,
   onAddGuestPlayerToRoom,
   onToggleRoomPlayerPresence,
+  onNavigateToDraw,
 }) => {
   const [joinCodeInput, setJoinCodeInput] = useState(roomCode);
   const [joinNameInput, setJoinNameInput] = useState(userName);
@@ -219,6 +223,112 @@ export const LiveRoomView: React.FC<LiveRoomViewProps> = ({
               ))}
             </div>
           </div>
+        </section>
+
+        {/* Live Drawn Teams Section */}
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+              <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                <Trophy className="w-4 h-4 text-emerald-400" />
+                Sorteio dos Times Ao Vivo
+              </h3>
+            </div>
+            {onNavigateToDraw && (
+              <button
+                type="button"
+                onClick={onNavigateToDraw}
+                className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                Ver Prancheta Completa
+              </button>
+            )}
+          </div>
+
+          {roomState?.drawnTeams && roomState.drawnTeams.length > 0 ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {roomState.drawnTeams.map((team, idx) => {
+                  const cleanName = (myAthleteName || '').trim().toLowerCase();
+                  const isMyTeam = cleanName
+                    ? team.linePlayers.some((p) => p.name.trim().toLowerCase() === cleanName) ||
+                      team.goalkeeper?.name.trim().toLowerCase() === cleanName
+                    : false;
+
+                  return (
+                    <div
+                      key={team.id}
+                      className={`rounded-xl p-4 transition-all ${
+                        isMyTeam
+                          ? 'bg-slate-950 border-2 border-emerald-400 shadow-[0_0_15px_rgba(52,211,153,0.2)]'
+                          : 'bg-slate-950 border border-slate-800/80'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="w-3 h-3 rounded-full shrink-0"
+                            style={{ backgroundColor: team.accentHex }}
+                          />
+                          <h4 className="text-sm font-bold text-white truncate">
+                            {team.name}
+                          </h4>
+                        </div>
+                        {isMyTeam ? (
+                          <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-400 text-slate-950 shadow-[0_0_8px_#34d399] animate-pulse">
+                            SEU TIME
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-mono text-slate-400">
+                            {idx === 0 ? '1º Jogo (A)' : idx === 1 ? '1º Jogo (B)' : `Fila #${idx - 1}`}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-xs space-y-1 text-slate-300">
+                        {team.goalkeeper && (
+                          <div className="flex items-center gap-1.5 text-amber-300 font-medium">
+                            <span className="text-[10px] bg-amber-400/20 px-1 rounded">GK</span>
+                            <span className="truncate">{team.goalkeeper.name}</span>
+                            {cleanName && team.goalkeeper.name.trim().toLowerCase() === cleanName && (
+                              <span className="text-emerald-400 font-bold">(Você)</span>
+                            )}
+                          </div>
+                        )}
+                        {team.linePlayers.map((player) => {
+                          const isMe = cleanName && player.name.trim().toLowerCase() === cleanName;
+                          return (
+                            <div
+                              key={player.id}
+                              className={`flex items-center gap-1.5 ${
+                                isMe ? 'text-emerald-400 font-bold' : 'text-slate-300'
+                              }`}
+                            >
+                              <span className="text-slate-500">•</span>
+                              <span className="truncate">{player.name}</span>
+                              {isMe && <span>(Você)</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="bg-slate-950 border border-dashed border-slate-800 rounded-xl p-5 text-center space-y-2">
+              <Sparkles className="w-6 h-6 text-emerald-400 mx-auto opacity-70 animate-pulse" />
+              <div className="text-xs font-semibold text-slate-200">
+                Aguardando Sorteio pelo Organizador
+              </div>
+              <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                Assim que os times forem sorteados na sala {roomCode}, a escalação completa e o seu time aparecerão aqui em tempo real!
+              </p>
+            </div>
+          )}
         </section>
       </div>
 

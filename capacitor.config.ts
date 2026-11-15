@@ -17,6 +17,10 @@ const config: CapacitorConfig = {
       appReadyTimeout: 15000,
       responseTimeout: 30,
     },
+    LocalNotifications: {
+      smallIcon: 'ic_stat_icon',
+      iconColor: '#10B981',
+    },
   },
 };
 

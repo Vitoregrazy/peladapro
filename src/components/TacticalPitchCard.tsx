@@ -7,6 +7,8 @@ interface TacticalPitchCardProps {
   rules: MatchRules;
   camouflageStars?: boolean;
   onSendToMatch?: () => void;
+  isMyTeam?: boolean;
+  myAthleteName?: string | null;
 }
 
 /**
@@ -87,6 +89,8 @@ export const TacticalPitchCard: React.FC<TacticalPitchCardProps> = ({
   index,
   rules,
   camouflageStars = false,
+  isMyTeam = false,
+  myAthleteName = null,
 }) => {
   const coords = getFormationCoordinates(team.linePlayers.length);
   const slotLabel =
@@ -98,8 +102,20 @@ export const TacticalPitchCard: React.FC<TacticalPitchCardProps> = ({
 
   const displayedAverage = camouflageStars ? '4.2' : team.averageRating.toFixed(1);
 
+  const isMe = (name?: string) => {
+    if (!name || !myAthleteName) return false;
+    return name.trim().toLowerCase() === myAthleteName.trim().toLowerCase();
+  };
+
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between gap-4">
+    <div
+      id={`tactical-pitch-card-${team.id}`}
+      className={`rounded-2xl p-5 flex flex-col justify-between gap-4 transition-all duration-300 ${
+        isMyTeam
+          ? 'bg-slate-900 border-2 border-emerald-400 shadow-[0_0_25px_rgba(52,211,153,0.25)]'
+          : 'bg-slate-900 border border-slate-800'
+      }`}
+    >
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -130,6 +146,11 @@ export const TacticalPitchCard: React.FC<TacticalPitchCardProps> = ({
               aria-hidden="true"
             />
             {team.name}
+            {isMyTeam && (
+              <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-400 text-slate-950 shadow-[0_0_10px_#34d399] animate-pulse">
+                SEU TIME
+              </span>
+            )}
           </h3>
         </div>
         <div className="text-right">
@@ -242,7 +263,14 @@ export const TacticalPitchCard: React.FC<TacticalPitchCardProps> = ({
               <span className="font-medium text-slate-100 truncate flex items-center gap-1.5">
                 {team.goalkeeper ? (
                   <>
-                    <span>{team.goalkeeper.name}</span>
+                    <span className={isMe(team.goalkeeper.name) ? 'text-emerald-400 font-bold' : ''}>
+                      {team.goalkeeper.name}
+                    </span>
+                    {isMe(team.goalkeeper.name) && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                        Você
+                      </span>
+                    )}
                     {team.goalkeeper.isImprovisedGK && (
                       <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/30">
                         Rodízio
@@ -268,8 +296,13 @@ export const TacticalPitchCard: React.FC<TacticalPitchCardProps> = ({
               <span className="text-xs font-mono text-slate-400 w-6 shrink-0 tabular-nums">
                 {String(idx + 1).padStart(2, '0')}.
               </span>
-              <span className="text-slate-200 truncate">
+              <span className={`truncate ${isMe(player.name) ? 'font-bold text-emerald-400' : 'text-slate-200'}`}>
                 {player.name}
+                {isMe(player.name) && (
+                  <span className="ml-1.5 text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    Você
+                  </span>
+                )}
               </span>
             </div>
             <span className="text-xs font-mono text-slate-400 tabular-nums shrink-0">

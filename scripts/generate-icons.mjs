@@ -289,6 +289,28 @@ async function generateAllAssets() {
     console.log(`  ✓ ${m.folder} (${m.launcher}x${m.launcher} + ${m.foreground}x${m.foreground})`);
   }
 
+  // 1b. Generate Web & Notification Assets
+  const publicDir = path.resolve('public');
+  if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+  await sharp(masterBuffer).resize(192, 192).png().toFile(path.join(publicDir, 'logo-192x192.png'));
+  await sharp(masterBuffer).resize(512, 512).png().toFile(path.join(publicDir, 'logo-512x512.png'));
+  console.log('  ✓ public/logo-192x192.png & logo-512x512.png');
+
+  // Generate Notification Status Bar Icon (monochrome white on transparent)
+  const statIconSvg = `
+<svg width="96" height="96" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg">
+  <path d="M48 6 L80 18 C80 50 68 74 48 90 C28 74 16 50 16 18 Z" fill="#ffffff" />
+  <circle cx="48" cy="44" r="16" fill="#000000" />
+  <circle cx="48" cy="44" r="13" fill="#ffffff" />
+  <polygon points="48,36 55,41 53,49 43,49 41,41" fill="#000000" />
+</svg>
+  `;
+  const drawableDir = path.join(resPath, 'drawable');
+  if (!fs.existsSync(drawableDir)) fs.mkdirSync(drawableDir, { recursive: true });
+  await sharp(Buffer.from(statIconSvg)).resize(96, 96).png().toFile(path.join(drawableDir, 'ic_stat_icon.png'));
+  await sharp(masterBuffer).resize(192, 192).png().toFile(path.join(drawableDir, 'ic_launcher.png'));
+  console.log('  ✓ drawable/ic_stat_icon.png (Notification icon) & drawable/ic_launcher.png');
+
   // 2. Update ic_launcher_background.xml color to dark slate
   const bgXmlPath = path.join(resPath, 'values', 'ic_launcher_background.xml');
   if (fs.existsSync(bgXmlPath)) {

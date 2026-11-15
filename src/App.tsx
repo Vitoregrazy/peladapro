@@ -84,6 +84,9 @@ import {
 } from './services/soundEffects';
 import { OtaStatus, otaService } from './services/otaService';
 import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
+import { initNotifications, notifyDrawCompleted } from './services/notificationService';
+import { MyTeamCard } from './components/MyTeamCard';
 
 type ActiveTab = 'draw' | 'match' | 'tournament' | 'live';
 type DrawSubTab = 'players' | 'teams' | 'rules';
@@ -185,6 +188,35 @@ export default function App() {
   const stateUpdatedAtRef = useRef<number>(initialHydrated.updatedAt);
   const lastUserMutationAtRef = useRef<number>(0);
   const syncAbortControllerRef = useRef<AbortController | null>(null);
+
+  // Identidade do Atleta & "Meu Time"
+  const [myAthleteName, setMyAthleteName] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('peladapro_my_athlete_name') || '';
+  });
+  const myAthleteNameRef = useRef<string>(myAthleteName);
+  myAthleteNameRef.current = myAthleteName;
+
+  const handleSelectMyAthlete = (name: string) => {
+    setMyAthleteName(name);
+    try {
+      localStorage.setItem('peladapro_my_athlete_name', name);
+    } catch {
+      // ignore
+    }
+  };
+
+  // Inicializa notificações do PeladaPro e escuta toques na notificação
+  useEffect(() => {
+    void initNotifications((_targetRoom) => {
+      setActiveTab('draw');
+      setDrawSubTab('teams');
+      setTimeout(() => {
+        const el = document.getElementById('meu-time-anchor');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 300);
+    });
+  }, []);
 
   // Estado OTA global para bloqueio obrigatório até atualizar
   const [otaStatus, setOtaStatus] = useState<OtaStatus | null>(null);
@@ -386,6 +418,14 @@ export default function App() {
       setLiveMatch(clean.liveMatch);
       setChampionship(clean.championship);
 
+      if (clean.drawnTeams && clean.drawnTeams.length > 0) {
+        void notifyDrawCompleted(
+          clean.code || roomCode,
+          clean.drawnTeams,
+          myAthleteNameRef.current
+        );
+      }
+
       try {
         localStorage.setItem(
           LOCAL_STORAGE_KEY,
@@ -466,6 +506,15 @@ export default function App() {
     };
     document.addEventListener('visibilitychange', handleVisibilityRefresh);
 
+    let appStateListener: Promise<{ remove: () => Promise<void> }> | null = null;
+    if (Capacitor.isNativePlatform()) {
+      appStateListener = CapApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) {
+          pollFallback();
+        }
+      });
+    }
+
     const connect = () => {
       // WebSocket só existe no servidor local (server.ts). No APK (localhost do Capacitor)
       // e na Vercel não há endpoint WS: usamos apenas o sync HTTP para não gerar reconexões infinitas.
@@ -516,6 +565,9 @@ export default function App() {
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityRefresh);
+      if (appStateListener) {
+        void appStateListener.then((l) => l.remove()).catch(() => { });
+      }
       if (pollTimer) clearInterval(pollTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) {
@@ -754,6 +806,10 @@ export default function App() {
     setSelectedTeamView('all');
     setDrawSubTab('teams');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    if (nextTeams.length > 0) {
+      void notifyDrawCompleted(roomCode, nextTeams, myAthleteNameRef.current);
+    }
 
     broadcastSync(
       {
@@ -1885,17 +1941,42 @@ export default function App() {
                       ))}
                     </div>
 
+                    {/* Personalized "Meu Time" Card */}
+                    <MyTeamCard
+                      drawnTeams={drawnTeams}
+                      allPlayers={players}
+                      myAthleteName={myAthleteName}
+                      onSelectAthlete={handleSelectMyAthlete}
+                      onScrollToTeam={(teamId) => {
+                        setSelectedTeamView('all');
+                        setTimeout(() => {
+                          const el = document.getElementById(`tactical-pitch-card-${teamId}`);
+                          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }, 100);
+                      }}
+                    />
+
                     {/* Tactical Pitch Cards Grid */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {displayedTeams.map((team, idx) => (
-                        <TacticalPitchCard
-                          key={team.id}
-                          team={team}
-                          index={selectedTeamView === 'all' ? idx : Number(selectedTeamView)}
-                          rules={rules}
-                          camouflageStars={rigging.enabled && Boolean(rigging.camouflageStars)}
-                        />
-                      ))}
+                      {displayedTeams.map((team, idx) => {
+                        const cleanMyName = (myAthleteName || '').trim().toLowerCase();
+                        const isMyTeam = cleanMyName
+                          ? team.linePlayers.some((p) => p.name.trim().toLowerCase() === cleanMyName) ||
+                            team.goalkeeper?.name.trim().toLowerCase() === cleanMyName
+                          : false;
+
+                        return (
+                          <TacticalPitchCard
+                            key={team.id}
+                            team={team}
+                            index={selectedTeamView === 'all' ? idx : Number(selectedTeamView)}
+                            rules={rules}
+                            camouflageStars={rigging.enabled && Boolean(rigging.camouflageStars)}
+                            isMyTeam={isMyTeam}
+                            myAthleteName={myAthleteName}
+                          />
+                        );
+                      })}
                     </div>
                   </>
                 )}
@@ -2141,6 +2222,15 @@ export default function App() {
             isConnected={isWsConnected}
             roomState={roomState}
             players={players}
+            myAthleteName={myAthleteName}
+            onNavigateToDraw={() => {
+              setActiveTab('draw');
+              setDrawSubTab('teams');
+              setTimeout(() => {
+                const el = document.getElementById('meu-time-anchor');
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 100);
+            }}
             onJoinRoom={(code, name) => {
               const normalizedCode = (code || 'SOC-10').trim().toUpperCase();
               const normalizedName = (name || 'Atleta').trim();

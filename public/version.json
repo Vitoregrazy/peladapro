@@ -1,11 +1,11 @@
 {
-  "version": "1.2.6",
-  "buildId": "1.2.6-1794486486406",
-  "checksum": "30802d2199814cbef7a6816abb876737e64e2fd6eecd9b31b52642b55b4ebb6a",
-  "timestamp": "2026-11-12T12:28:06.406Z",
+  "version": "1.2.7",
+  "buildId": "1.2.7-1794754889541",
+  "checksum": "5b380bcb6b89e711d9b500aabf40c93fe9950c21b5d2ffc7797d5983bf9849bc",
+  "timestamp": "2026-11-15T15:01:29.541Z",
   "forceUpdate": true,
   "mandatory": true,
   "bundlePath": "/ota-bundle.zip",
   "bundleUrl": "https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public/ota-bundle.zip",
-  "releaseNotes": "Atualização oficial PeladaPro: melhorias de estabilidade, sincronização em tempo real e envio para WhatsApp."
+  "releaseNotes": "Atualização oficial PeladaPro v1.2.7: Sorteio ao vivo em tempo real, visualização exclusiva \"Meu Time\" e notificações instantâneas com logo oficial."
 }
