@@ -57,7 +57,7 @@ const versionManifest = {
   mandatory: true,
   bundlePath: '/ota-bundle.zip',
   bundleUrl: 'https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public/ota-bundle.zip',
-  releaseNotes: 'Atualização oficial PeladaPro v1.2.7: Sorteio ao vivo em tempo real, visualização exclusiva "Meu Time" e notificações instantâneas com logo oficial.',
+  releaseNotes: 'Atualização oficial PeladaPro v1.2.8: melhorias de desempenho no sorteio ao vivo, estabilidade de sincronização e otimizações gerais.',
 };
 
 fs.writeFileSync(

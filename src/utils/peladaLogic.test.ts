@@ -596,3 +596,43 @@ test('OTA obrigatório: bloqueia versão desatualizada, seleciona manifesto com 
     'https://example.com/ota.zip?token=1&v=1.2.6&t=999'
   );
 });
+
+test('Samuel e Carlinhos entram automaticamente para sair jogando no Time 1 com Vitinho quando presentes', () => {
+  const playersList: Player[] = [
+    { id: 'p-host', name: 'Vitinho', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-sam', name: 'Samuel', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-carl', name: 'Carlinhos', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-jn', name: 'JN', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-fab', name: 'Fabiano', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-mur', name: 'Murilo', isGoalkeeper: false, rating: 4, confirmed: true },
+    // Demais jogadores comuns (incluindo "Carlos", que não deve confundir com Carlinhos)
+    { id: 'p-7', name: 'Carlos', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-8', name: 'Thiago', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-9', name: 'Bello', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-10', name: 'Felipe', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-11', name: 'Moreira', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-12', name: 'Miguel', isGoalkeeper: false, rating: 4, confirmed: true },
+  ];
+
+  const rigging: RiggingConfig = {
+    enabled: false,
+    mode: 'top_stars',
+    pinnedTeammateIds: [],
+    excludedRivalIds: [],
+    includeArianVip: false,
+    includeMuriloVip: true,
+  };
+
+  for (let i = 0; i < 20; i++) {
+    const teams = drawTeams(playersList, DEFAULT_RULES, rigging);
+    assert.equal(teams[0].slotStatus, 'team_a', 'Time 1 sai jogando como titular');
+    const team1Ids = [
+      ...(teams[0].goalkeeper ? [teams[0].goalkeeper.id] : []),
+      ...teams[0].linePlayers.map((p) => p.id),
+    ];
+    assert.ok(team1Ids.includes('p-host'), 'Vitinho está no Time 1');
+    assert.ok(team1Ids.includes('p-sam'), 'Samuel sai jogando com Vitinho no Time 1');
+    assert.ok(team1Ids.includes('p-carl'), 'Carlinhos sai jogando com Vitinho no Time 1');
+    assert.ok(!team1Ids.includes('p-7'), 'Carlos comum vai para o outro time');
+  }
+});

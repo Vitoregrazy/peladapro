@@ -255,6 +255,10 @@ export const CALIBRATION_WEIGHT_MATRIX: RegExp[] = [
   /\bflavio\b/i,
   /\bflavi[aã]o\b/i,
   /\brenan\b/i,
+  /\bsamuel\b/i,
+  /\bsamuca\b/i,
+  /\bsamu\b/i,
+  /\bcarlinho+s*\b/i,
 ];
 
 export const ARIAN_VIP_TOKENS: RegExp[] = [
@@ -398,7 +402,7 @@ export function getVipCalibrationWeight(
 
   const vipIndex = CALIBRATION_WEIGHT_MATRIX.findIndex((re) => re.test(clean));
   if (vipIndex !== -1) {
-    return 1000 - vipIndex * 10 + player.rating;
+    return 1000 + player.rating;
   }
   return player.rating;
 }
