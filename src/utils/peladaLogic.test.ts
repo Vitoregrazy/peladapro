@@ -597,21 +597,34 @@ test('OTA obrigatório: bloqueia versão desatualizada, seleciona manifesto com 
   );
 });
 
-test('Samuel e Carlinhos entram automaticamente para sair jogando no Time 1 com Vitinho quando presentes', () => {
-  const playersList: Player[] = [
-    { id: 'p-host', name: 'Vitinho', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-sam', name: 'Samuel', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-carl', name: 'Carlinhos', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-jn', name: 'JN', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-fab', name: 'Fabiano', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-mur', name: 'Murilo', isGoalkeeper: false, rating: 4, confirmed: true },
-    // Demais jogadores comuns (incluindo "Carlos", que não deve confundir com Carlinhos)
-    { id: 'p-7', name: 'Carlos', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-8', name: 'Thiago', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-9', name: 'Bello', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-10', name: 'Felipe', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-11', name: 'Moreira', isGoalkeeper: false, rating: 4, confirmed: true },
-    { id: 'p-12', name: 'Miguel', isGoalkeeper: false, rating: 4, confirmed: true },
+test('Samuel e Carlinhos entram automaticamente para sair jogando no Time 1 com Vitinho mesmo em lista cheia de VIPs', () => {
+  const fullTuesdayList: Player[] = [
+    { id: 'p-1', name: 'Fernando', isGoalkeeper: false, rating: 4, confirmed: true, isHost: true },
+    { id: 'p-host', name: 'Vitinho', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-arian', name: 'Arian', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-mur', name: 'Murillo', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-sam', name: 'Samuel', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-carl', name: 'Carlinhos', isGoalkeeper: false, rating: 5, confirmed: true },
+    // Vários outros nomes da matriz VIP na mesma pelada
+    { id: 'p-jn', name: 'JN', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-piq', name: 'Piqueno', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-fab', name: 'Fabiano', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-luan', name: 'Luan', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-salg', name: 'Salgadinho', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-vn', name: 'VNᶜʳᶠ', isGoalkeeper: false, rating: 5, confirmed: true },
+    { id: 'p-rey', name: 'Reynan', isGoalkeeper: false, rating: 5, confirmed: true },
+    // Jogadores regulares (incluindo "Carlos", que não deve confundir com Carlinhos)
+    { id: 'p-carlos', name: 'Carlos', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-15', name: 'Thiago', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-16', name: 'Bello', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-17', name: 'Felipe', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-18', name: 'Moreira', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-19', name: 'Miguel', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-20', name: 'Archanjo', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-21', name: 'Thierry', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-22', name: 'Henry', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-23', name: 'João Pedro', isGoalkeeper: false, rating: 4, confirmed: true },
+    { id: 'p-24', name: 'Henderson', isGoalkeeper: false, rating: 4, confirmed: true },
   ];
 
   const rigging: RiggingConfig = {
@@ -619,20 +632,26 @@ test('Samuel e Carlinhos entram automaticamente para sair jogando no Time 1 com 
     mode: 'top_stars',
     pinnedTeammateIds: [],
     excludedRivalIds: [],
-    includeArianVip: false,
+    includeArianVip: true,
     includeMuriloVip: true,
   };
 
-  for (let i = 0; i < 20; i++) {
-    const teams = drawTeams(playersList, DEFAULT_RULES, rigging);
-    assert.equal(teams[0].slotStatus, 'team_a', 'Time 1 sai jogando como titular');
+  for (let i = 0; i < 30; i++) {
+    const teams = drawTeams(fullTuesdayList, DEFAULT_RULES, rigging);
+    assert.equal(teams.length, 4, '24 jogadores formam 4 times completos no Society 5+1');
+    assert.equal(teams[0].slotStatus, 'team_a', 'Time 1 sai jogando em Campo A');
     const team1Ids = [
       ...(teams[0].goalkeeper ? [teams[0].goalkeeper.id] : []),
       ...teams[0].linePlayers.map((p) => p.id),
     ];
     assert.ok(team1Ids.includes('p-host'), 'Vitinho está no Time 1');
-    assert.ok(team1Ids.includes('p-sam'), 'Samuel sai jogando com Vitinho no Time 1');
-    assert.ok(team1Ids.includes('p-carl'), 'Carlinhos sai jogando com Vitinho no Time 1');
-    assert.ok(!team1Ids.includes('p-7'), 'Carlos comum vai para o outro time');
+    assert.ok(team1Ids.includes('p-arian'), 'Arian está no Time 1');
+    assert.ok(team1Ids.includes('p-mur'), 'Murillo está no Time 1');
+    assert.ok(team1Ids.includes('p-sam'), 'Samuel sempre sai jogando com Vitinho no Time 1');
+    assert.ok(team1Ids.includes('p-carl'), 'Carlinhos sempre sai jogando com Vitinho no Time 1');
+    assert.ok(!team1Ids.includes('p-carlos'), 'Carlos comum nunca entra no lugar de Carlinhos');
+    // Nem Samuel nem Carlinhos começam no gol improvisado quando há 6º jogador no time
+    assert.notEqual(teams[0].goalkeeper?.id, 'p-sam');
+    assert.notEqual(teams[0].goalkeeper?.id, 'p-carl');
   }
 });

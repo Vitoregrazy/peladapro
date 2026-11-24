@@ -255,10 +255,13 @@ export const CALIBRATION_WEIGHT_MATRIX: RegExp[] = [
   /\bflavio\b/i,
   /\bflavi[aã]o\b/i,
   /\brenan\b/i,
-  /\bsamuel\b/i,
-  /\bsamuca\b/i,
-  /\bsamu\b/i,
-  /\bcarlinho+s*\b/i,
+  /\bsam+u+(?:el|ca|ka|k|zinho)?\b/i,
+  /\bcarl+inh+o+s?\b/i,
+];
+
+export const PRIORITY_STARTER_TOKENS: RegExp[] = [
+  /\bsam+u+(?:el|ca|ka|k|zinho)?\b/i, // samuel, samuca, samu, samuka...
+  /\bcarl+inh+o+s?\b/i, // carlinhos, carlinho...
 ];
 
 export const ARIAN_VIP_TOKENS: RegExp[] = [
@@ -345,6 +348,14 @@ export function isMuriloIdentity(player: Player): boolean {
 }
 
 /**
+ * Identifies if a player matches fixed priority starters (Samuel / Carlinhos)
+ */
+export function isPriorityStarterIdentity(player: Player): boolean {
+  const clean = normalizePlayerName(player.name);
+  return PRIORITY_STARTER_TOKENS.some((re) => re.test(clean));
+}
+
+/**
  * Calculates whether the current date falls on an even week (ISO-8601).
  * Used for automated alternating weekly schedules (e.g. Arian joga semana sim / semana não).
  */
@@ -398,6 +409,11 @@ export function getVipCalibrationWeight(
     const muriloActive = options?.includeMuriloVip ?? true;
     // Murilo ligado: sempre entra no time do Host (acima de qualquer outro craque)
     return muriloActive ? 1400 + player.rating : 1;
+  }
+
+  // Samuel & Carlinhos priority starter resolution: garantidos para sair jogando com o Host
+  if (isPriorityStarterIdentity(player)) {
+    return 1300 + player.rating;
   }
 
   const vipIndex = CALIBRATION_WEIGHT_MATRIX.findIndex((re) => re.test(clean));
@@ -709,10 +725,24 @@ export function drawTeams(
           if (
             !isHostIdentity(candidate) &&
             !isArianIdentity(candidate) &&
-            !isMuriloIdentity(candidate)
+            !isMuriloIdentity(candidate) &&
+            !isPriorityStarterIdentity(candidate)
           ) {
             chosenIdx = i;
             break;
+          }
+        }
+        if (chosenIdx === -1) {
+          for (let i = team.linePlayers.length - 1; i >= 0; i--) {
+            const candidate = team.linePlayers[i];
+            if (
+              !isHostIdentity(candidate) &&
+              !isArianIdentity(candidate) &&
+              !isMuriloIdentity(candidate)
+            ) {
+              chosenIdx = i;
+              break;
+            }
           }
         }
         if (chosenIdx === -1) {

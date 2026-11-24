@@ -48,7 +48,6 @@ const zipBuffer = fs.readFileSync(zipPath);
 const checksum = crypto.createHash('sha256').update(zipBuffer).digest('hex');
 
 // 3. Gera o dist/version.json e espelha em public/
-const isVercelBuild = Boolean(process.env.VERCEL);
 const versionManifest = {
   version,
   buildId: `${version}-${Date.now()}`,
@@ -57,10 +56,8 @@ const versionManifest = {
   forceUpdate: true,
   mandatory: true,
   bundlePath: '/ota-bundle.zip',
-  bundleUrl: isVercelBuild
-    ? 'https://peladapro-vitor-hugo-s-projects-d627ca8c.vercel.app/ota-bundle.zip'
-    : 'https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public/ota-bundle.zip',
-  releaseNotes: 'Atualização oficial PeladaPro v1.2.8: melhorias de desempenho no sorteio ao vivo, estabilidade de sincronização e otimizações gerais.',
+  bundleUrl: 'https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public/ota-bundle.zip',
+  releaseNotes: `Atualização oficial PeladaPro v${version}: melhorias de desempenho no sorteio ao vivo, sincronização instantânea e otimizações gerais.`,
 };
 
 fs.writeFileSync(
@@ -83,4 +80,3 @@ console.log(`✅ [OTA] Pacote gerado com sucesso!`);
 console.log(`   -> Versão: ${version}`);
 console.log(`   -> Bundle: dist/ota-bundle.zip e public/ota-bundle.zip (${(zipBuffer.length / 1024).toFixed(1)} KB)`);
 console.log(`   -> Manifest: dist/version.json e public/version.json`);
-

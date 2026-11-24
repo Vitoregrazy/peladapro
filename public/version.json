@@ -1,11 +1,11 @@
 {
-  "version": "1.2.8",
-  "buildId": "1.2.8-1795559767377",
-  "checksum": "67a4848723184cb5ae8ee8e75caf24874f9e199c475a54a898755cf3701fd8b7",
-  "timestamp": "2026-11-24T22:36:07.377Z",
+  "version": "1.2.9",
+  "buildId": "1.2.9-1795560807514",
+  "checksum": "d8f0a5284b3cfdca533f54230f64786e0043572786d4f644249898c78c59c9e1",
+  "timestamp": "2026-11-24T22:53:27.514Z",
   "forceUpdate": true,
   "mandatory": true,
   "bundlePath": "/ota-bundle.zip",
   "bundleUrl": "https://raw.githubusercontent.com/Vitoregrazy/peladapro/main/public/ota-bundle.zip",
-  "releaseNotes": "Atualização oficial PeladaPro v1.2.8: melhorias de desempenho no sorteio ao vivo, estabilidade de sincronização e otimizações gerais."
+  "releaseNotes": "Atualização oficial PeladaPro v1.2.9: melhorias de desempenho no sorteio ao vivo, sincronização instantânea e otimizações gerais."
 }
